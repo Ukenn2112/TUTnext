@@ -2,6 +2,10 @@
 
 Tama University 多摩大スケジュール自動生成システム
 
+<img width="1000" alt="image" src="https://github.com/user-attachments/assets/ab58cabe-f529-4a32-a433-0178adea3a10">
+
+
+
 ## 特徴
 
 - T-NEXT 多摩大学キャンパスシステムでデータを取得し、スケジュールを自動生成します。
