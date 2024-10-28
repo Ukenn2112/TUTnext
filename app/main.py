@@ -3,7 +3,7 @@ import os
 import app.config
 from pydantic import BaseModel
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from app.routes import schedule, bus
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError

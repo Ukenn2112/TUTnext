@@ -50,6 +50,7 @@ async def send_schedule(username: str = None, password: str = None):
             course_list = await gakuen.month_data(month)
             for course in course_list:
                 event = Event()
+                if not course["title"]: continue
                 event.add("summary", course["title"])
                 event.add("dtstart", course["start"])
                 event.add("dtend", course["end"])
