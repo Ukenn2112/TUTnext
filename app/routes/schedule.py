@@ -28,7 +28,7 @@ async def send_schedule(username: str = None, password: str = None):
             if i["jugyoName"] in gakuen.class_list:
                 class_status = await gakuen.class_data_info(i)
                 chuqian = class_status["attInfoDtoList"][0]
-                if chuqian["kessekiKaisu"] > 0:
+                if chuqian["kessekiKaisu"] > 0 and "ゼミ" not in i["jugyoName"]:
                     gakuen.class_list[i["jugyoName"]][
                         "lessonClass"
                     ] += f" 欠席回数 {chuqian['kessekiKaisu']}"
