@@ -89,6 +89,11 @@
                         navigator.clipboard.writeText(`https://tama.qaq.tw/schedule?username=${username}&password=${password}`);
                         alert('リンクをコピーしました');
                         return;
+                    } else if (document.activeElement.id === 'to_google') {
+                        navigator.clipboard.writeText(`https://tama.qaq.tw/schedule?username=${username}&password=${password}`);
+                        alert('リンクをコピーしました\nGoogle カレンダーにアクセスして、URL で追加を選択して貼り付けてください');
+                        window.location.href = 'https://calendar.google.com/calendar/u/0/r/settings/addbyurl';
+                        return;
                     }
                     window.location.href = `webcal://tama.qaq.tw/schedule?username=${username}&password=${password}`;
                 } else {
@@ -111,6 +116,8 @@
             <label for="password">パスワード:</label>
             <input type="password" id="password" name="password" required>
             <button type="submit">Apple カレンダーに配信する</button>
+            <br><br>
+            <button type="submit" id="to_google">Google カレンダーに配信する</button>
             <br><br>
             <button type="submit" id="copy_link">配信リンクをコピーする</button>
         </form>
