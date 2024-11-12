@@ -7,63 +7,106 @@
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #e0e0e0;
+            background-color: #f0f2f5;
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
         }
         .container {
-            background-color: #f8f8f8;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-            border: 1px solid #dcdcdc;
-            width: 350px;
+            background-color: #ffffff;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
+            width: 90%;
+            max-width: 400px;
             text-align: center;
+            box-sizing: border-box;
         }
         h1 {
-            font-size: 22px;
-            margin-bottom: 20px;
-            color: #333;
-            text-shadow: 1px 1px 0 rgba(255, 255, 255, 0.8);
+            margin-bottom: 25px;
+            color: #2c3e50;
+            text-shadow: 2px 2px 0 rgba(255, 255, 255, 0.9);
+            white-space: normal;
+            overflow: visible;
         }
         label {
             display: block;
-            margin-bottom: 8px;
-            color: #555;
+            margin-bottom: 10px;
+            color: #444;
+            font-size: 1em;
+            text-align: left;
         }
         input {
-            width: calc(100% - 22px);
-            padding: 10px;
-            margin-bottom: 15px;
+            width: 100%;
+            padding: 14px;
+            margin-bottom: 20px;
             border: 1px solid #ccc;
-            border-radius: 5px;
-            box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.1);
-            font-size: 16px;
+            border-radius: 8px;
+            box-shadow: inset 0 3px 5px rgba(0, 0, 0, 0.1);
+            font-size: 1em;
+            box-sizing: border-box;
+            transition: border-color 0.3s;
+        }
+        input:focus {
+            border-color: #4CAF50;
+            outline: none;
         }
         button {
             width: 100%;
-            padding: 12px;
+            padding: 14px;
             background-color: #4CAF50;
             color: white;
             border: none;
-            border-radius: 5px;
+            border-radius: 8px;
             cursor: pointer;
-            font-size: 18px;
-            box-shadow: 0 3px 6px rgba(0, 0, 0, 0.2);
+            font-size: 1em;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
             transition: background-color 0.3s, transform 0.2s;
+            margin-bottom: 15px;
         }
         button:hover {
             background-color: #45a049;
         }
         button:active {
-            transform: translateY(2px);
+            transform: translateY(3px);
+        }
+        @media (min-width: 768px) {
+            body {
+                padding: 40px;
+                height: auto;
+            }
+            .container {
+                width: 400px;
+                margin: auto;
+            }
+            button {
+                font-size: 1.1em;
+                padding: 16px;
+            }
         }
     </style>
     <script>
-        function generateAndRedirect() {
+        document.addEventListener('DOMContentLoaded', () => {
+            // 为每个按钮绑定独立事件监听器
+            document.getElementById('copy_link').addEventListener('click', (event) => {
+                event.preventDefault();
+                generateAndRedirect('copy_link');
+            });
+
+            document.getElementById('to_google').addEventListener('click', (event) => {
+                event.preventDefault();
+                generateAndRedirect('to_google');
+            });
+
+            document.getElementById('to_apple').addEventListener('click', (event) => {
+                event.preventDefault();
+                generateAndRedirect('to_apple');
+            });
+        });
+
+        function generateAndRedirect(action) {
             var username = document.getElementById('username').value.trim();
             var password = document.getElementById('password').value.trim();
 
@@ -82,43 +125,46 @@
                 },
                 body: JSON.stringify(data),
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('HTTP error ' + response.status);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.status === 'success') {
-                    if (document.activeElement.id === 'copy_link') {
+                    if (action === 'copy_link') {
+                        new 
                         navigator.clipboard.writeText(`https://tama.qaq.tw/schedule?username=${username}&password=${password}`);
                         alert('リンクをコピーしました');
-                        return;
-                    } else if (document.activeElement.id === 'to_google') {
+                    } else if (action === 'to_google') {
                         navigator.clipboard.writeText(`https://tama.qaq.tw/schedule?username=${username}&password=${password}`);
                         alert('リンクをコピーしました\nGoogle カレンダーにアクセスして、URL で追加を選択して貼り付けてください');
                         window.location.href = 'https://calendar.google.com/calendar/u/0/r/settings/addbyurl';
-                        return;
+                    } else if (action === 'to_apple') {
+                        window.location.href = `webcal://tama.qaq.tw/schedule?username=${username}&password=${password}`;
                     }
-                    window.location.href = `webcal://tama.qaq.tw/schedule?username=${username}&password=${password}`;
                 } else {
                     alert(data.message);
                 }
             })
             .catch((error) => {
                 console.error('Error:', error);
-                alert('エラーが発生しました\n' + error);
+                alert('エラーが発生しました\n' + error.message);
             });
         }
     </script>
 </head>
 <body>
     <div class="container">
-        <h1>多摩大スケジュール 配信システム</h1>
-        <form onsubmit="event.preventDefault(); generateAndRedirect();">
+        <h1>多摩大スケジュール<br>配信システム</h1>
+        <form onsubmit="event.preventDefault(); return false;">
             <label for="username">ユーザー名:</label>
             <input type="text" id="username" name="username" required>
             <label for="password">パスワード:</label>
             <input type="password" id="password" name="password" required>
-            <button type="submit">Apple カレンダーに配信する</button>
-            <br><br>
+            <button type="submit" id="to_apple">Apple カレンダーに配信する</button>
             <button type="submit" id="to_google">Google カレンダーに配信する</button>
-            <br><br>
             <button type="submit" id="copy_link">配信リンクをコピーする</button>
         </form>
     </div>

@@ -79,17 +79,18 @@ class GakuenAPI:
                 .lstrip("#funcForm:")
             )
             for input_tag in soup.find_all("input"):
-                if input_tag.get("name") == "rx-token":
-                    self.rx["token"] = input_tag.get("value")
-                elif input_tag.get("name") == "rx-loginKey":
-                    self.rx["loginKey"] = input_tag.get("value")
-                elif input_tag.get("name") == "rx-deviceKbn":
-                    self.rx["deviceKbn"] = input_tag.get("value")
-                elif input_tag.get("name") == "rx-loginType":
-                    self.rx["loginType"] = input_tag.get("value")
-                elif input_tag.get("name") == "javax.faces.ViewState":
-                    self.view_state = input_tag.get("value")
-            t = soup.find_all("div", class_="lessonMain")
+                name = input_tag.get("name")
+                value = input_tag.get("value")
+                if name == "rx-token":
+                    self.rx["token"] = value
+                elif name == "rx-loginKey":
+                    self.rx["loginKey"] = value
+                elif name == "rx-deviceKbn":
+                    self.rx["deviceKbn"] = value
+                elif name == "rx-loginType":
+                    self.rx["loginType"] = value
+                elif name == "javax.faces.ViewState":
+                    self.view_state = value
             for c in soup.find_all("div", class_="lessonMain"):
                 lessonTitle = (
                     c.find("p")
