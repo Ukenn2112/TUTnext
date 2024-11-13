@@ -91,41 +91,47 @@ class GakuenAPI:
                     self.rx["loginType"] = value
                 elif name == "javax.faces.ViewState":
                     self.view_state = value
+            # クラス tag
+            classs_tag = []
+            for index, h in enumerate(soup.find_all("div", class_="lessonHead")):
+                for tag_data in h.find_all("span", class_="signLesson"):
+                    classs_tag.append(
+                        ({tag_data.get("class")[1]: tag_data.text}, index)
+                    )
+            # クラス 教室変更
             for c in soup.find_all("div", class_="lessonMain"):
-                lessonTitle = (
-                    c.find("p")
-                    .text.replace("\n", "")
-                    .replace("\t", "")
-                    .replace("\u3000", " ")
-                )
+                lessonTitle = c.find("p").text.strip().replace("\u3000", " ")
                 if lessonTitle in self.class_list:
                     continue
+
                 lessonDetail = c.find("div", class_="lessonDetail")
-                lessonTeachers = lessonDetail.find_all("a")
+                lessonTeachers = " / ".join(
+                    teacher.text.replace("\u3000", " ")
+                    for teacher in lessonDetail.find_all("a")
+                )
+
                 if lessonDetail.find("label"):
                     __Class = lessonDetail.find_all("div")
-                    b = __Class[0].text.replace("\n", "").replace("\t", "")
-                    a = __Class[2].text.replace("\n", "").replace("\t", "")
-                    lessonClass = "変更: " + a + " → " + b
-                else:
-                    __Class = lessonDetail.find_all("div")
-                    lessonClass = " / ".join(
-                        [
-                            _Class.text.replace("\n", "").replace("\t", "")
-                            for _Class in __Class
-                        ]
+                    lessonClass = (
+                        f"変更: {__Class[2].text.strip()} → {__Class[0].text.strip()}"
                     )
+                else:
+                    lessonClass = " / ".join(
+                        _Class.text.strip() for _Class in lessonDetail.find_all("div")
+                    )
+
                 self.class_list[lessonTitle] = {
-                    "lessonTeachers": " / ".join(
-                        [
-                            Teacher.text.replace("\u3000", " ")
-                            for Teacher in lessonTeachers
-                        ]
-                    ),
+                    "lessonTeachers": lessonTeachers,
                     "lessonClass": lessonClass,
                 }
+
             if not self.class_list:
                 raise GakuenAPIError("クラスデータが取得できませんでした")
+
+            course_keys = list(self.class_list.keys())
+            for data, index in classs_tag:
+                course_name = course_keys[index]
+                self.class_list[course_name].setdefault("tags", []).append(data)
         return self.class_list
 
     async def webapi_login(self) -> dict:
