@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8">
     <title>多摩大スケジュール 配信システム</title>
@@ -14,6 +15,7 @@
             min-height: 100vh;
             margin: 0;
         }
+
         .container {
             background-color: #ffffff;
             padding: 30px;
@@ -24,6 +26,7 @@
             text-align: center;
             box-sizing: border-box;
         }
+
         h1 {
             margin-bottom: 25px;
             color: #2c3e50;
@@ -31,6 +34,7 @@
             white-space: normal;
             overflow: visible;
         }
+
         label {
             display: block;
             margin-bottom: 10px;
@@ -38,6 +42,7 @@
             font-size: 1em;
             text-align: left;
         }
+
         input {
             width: 100%;
             padding: 14px;
@@ -49,10 +54,12 @@
             box-sizing: border-box;
             transition: border-color 0.3s;
         }
+
         input:focus {
             border-color: #4CAF50;
             outline: none;
         }
+
         button {
             width: 100%;
             padding: 14px;
@@ -66,21 +73,26 @@
             transition: background-color 0.3s, transform 0.2s;
             margin-bottom: 15px;
         }
+
         button:hover {
             background-color: #45a049;
         }
+
         button:active {
             transform: translateY(3px);
         }
+
         @media (min-width: 768px) {
             body {
                 padding: 40px;
                 height: auto;
             }
+
             .container {
                 width: 400px;
                 margin: auto;
             }
+
             button {
                 font-size: 1.1em;
                 padding: 16px;
@@ -107,8 +119,8 @@
         });
 
         function generateAndRedirect(action) {
-            var username = document.getElementById('username').value.trim();
-            var password = document.getElementById('password').value.trim();
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value.trim();
 
             if (!username || !password) {
                 alert('ユーザー名とパスワードを入力してください');
@@ -125,36 +137,56 @@
                 },
                 body: JSON.stringify(data),
             })
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error('HTTP error ' + response.status);
-                }
-                return response.json();
-            })
-            .then(data => {
-                if (data.status === 'success') {
-                    if (action === 'copy_link') {
-                        new 
-                        navigator.clipboard.writeText(`https://tama.qaq.tw/schedule?username=${username}&password=${password}`);
-                        alert('リンクをコピーしました');
-                    } else if (action === 'to_google') {
-                        navigator.clipboard.writeText(`https://tama.qaq.tw/schedule?username=${username}&password=${password}`);
-                        alert('リンクをコピーしました\nGoogle カレンダーにアクセスして、URL で追加を選択して貼り付けてください');
-                        window.location.href = 'https://calendar.google.com/calendar/u/0/r/settings/addbyurl';
-                    } else if (action === 'to_apple') {
-                        window.location.href = `webcal://tama.qaq.tw/schedule?username=${username}&password=${password}`;
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('HTTP error ' + response.status);
                     }
-                } else {
-                    alert(data.message);
-                }
-            })
-            .catch((error) => {
-                console.error('Error:', error);
-                alert('エラーが発生しました\n' + error.message);
-            });
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.status === 'success') {
+                        const SubURL = `tama.qaq.tw/schedule?username=${username}&password=${password}`;
+                        handleAction(action, SubURL);
+                    } else {
+                        alert(data.message);
+                    }
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    alert('エラーが発生しました\n' + error.message);
+                });
+        }
+
+        function handleAction(action, SubURL) {
+            const fullURL = 'https://' + SubURL;
+            if (action === 'copy_link') {
+                copyToClipboard(fullURL);
+                alert('リンクをコピーしました');
+            } else if (action === 'to_google') {
+                copyToClipboard(fullURL);
+                alert('リンクをコピーしました\nGoogle カレンダーにアクセスして、URL で追加を選択して貼り付けてください');
+                window.location.href = 'https://calendar.google.com/calendar/u/0/r/settings/addbyurl';
+            } else if (action === 'to_apple') {
+                window.location.href = 'webcal://' + SubURL;
+            }
+        }
+
+        function copyToClipboard(text) {
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(text);
+            } else {
+                const textArea = document.createElement('textarea');
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            }
         }
     </script>
 </head>
+
 <body>
     <div class="container">
         <h1>多摩大スケジュール<br>配信システム</h1>
@@ -169,4 +201,5 @@
         </form>
     </div>
 </body>
+
 </html>
