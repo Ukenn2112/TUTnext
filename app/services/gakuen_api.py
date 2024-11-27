@@ -62,22 +62,6 @@ class GakuenAPI:
             soup = BeautifulSoup(await r.text(), "html.parser")
             if error_msg := soup.find("span", class_="ui-messages-error-detail"):
                 raise GakuenAPIError(f"ログインエラー: {error_msg.text}")
-            if soup.find("dt", class_="msgArea"):
-                raise GakuenAPIError(
-                    f"エラー: 重要アンケートがあります、先にアンケートを回答してください"
-                )
-            self.j_idt = (
-                soup.find_all("script", type="text/javascript")[34]
-                .get("id")
-                .split(":")[1]
-            )
-            self.j_idt_kaitai = (
-                soup.find("div", id="portalSupport")
-                .find("li")
-                .find("a")
-                .get("href")
-                .lstrip("#funcForm:")
-            )
             for input_tag in soup.find_all("input"):
                 name = input_tag.get("name")
                 value = input_tag.get("value")
@@ -91,6 +75,22 @@ class GakuenAPI:
                     self.rx["loginType"] = value
                 elif name == "javax.faces.ViewState":
                     self.view_state = value
+            if soup.find("dt", class_="msgArea"): # 重要アンケートがある場合
+                soup = await self.to_home_page()
+                self.rx["token"] = soup.find("input", {"name": "rx-token"}).get("value")
+                self.view_state = soup.find("input", {"name": "javax.faces.ViewState"}).get("value")
+            self.j_idt = (
+                soup.find_all("script", type="text/javascript")[34]
+                .get("id")
+                .split(":")[1]
+            )
+            self.j_idt_kaitai = (
+                soup.find("div", id="portalSupport")
+                .find("li")
+                .find("a")
+                .get("href")
+                .lstrip("#funcForm:")
+            )
             # クラス tag
             classs_tag = []
             for index, h in enumerate(soup.find_all("div", class_="lessonHead")):
@@ -373,3 +373,34 @@ class GakuenAPI:
                         }
                     )
             return kaitai_list
+
+    async def to_home_page(self):
+        """ホームページに戻る
+        
+        Raises:
+            GakuenAPIError: ログインエラー
+            
+        Returns:
+            BeautifulSoup: ページデータ
+        """
+        async with self.s.post(
+            f"{self.hosts}/uprx/up/bs/bsc005/Bsc00501.xhtml",
+            data={
+                "headerForm": "headerForm",
+                "rx-token": self.rx["token"],
+                "rx-loginKey": self.rx["loginKey"],
+                "rx-deviceKbn": self.rx["deviceKbn"],
+                "rx-loginType": self.rx["loginType"],
+                "headerForm:logo": "",
+                "javax.faces.ViewState": self.view_state,
+                "rx.sync.source": "headerForm:logo",
+            },
+        ) as r:
+            if r.status != 200:
+                raise GakuenAPIError(
+                    "ログインエラー: ログインページが取得できませんでした"
+                )
+            soup = BeautifulSoup(await r.text(), "html.parser")
+            if error_msg := soup.find("span", class_="ui-messages-error-detail"):
+                raise GakuenAPIError(f"ログインエラー: {error_msg.text}")
+            return soup
