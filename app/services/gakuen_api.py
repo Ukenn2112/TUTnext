@@ -201,7 +201,7 @@ class GakuenAPI:
             return res["data"]
 
     async def class_bulletin(self, year: int = 0, semester: int = 0) -> dict:
-        """クラスデータ取得 (webapi loginが必要)
+        """クラスデータ取得 (webapi loginが必要) Student Only
 
         Args:
             year (int, optional): 開講年度. Defaults to 0.
