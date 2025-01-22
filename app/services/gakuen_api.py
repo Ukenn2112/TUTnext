@@ -75,10 +75,12 @@ class GakuenAPI:
                     self.rx["loginType"] = value
                 elif name == "javax.faces.ViewState":
                     self.view_state = value
-            if soup.find("dt", class_="msgArea"): # 重要アンケートがある場合
+            if soup.find("dt", class_="msgArea"):  # 重要アンケートがある場合
                 soup = await self.to_home_page()
                 self.rx["token"] = soup.find("input", {"name": "rx-token"}).get("value")
-                self.view_state = soup.find("input", {"name": "javax.faces.ViewState"}).get("value")
+                self.view_state = soup.find(
+                    "input", {"name": "javax.faces.ViewState"}
+                ).get("value")
             self.j_idt = (
                 soup.find_all("script", type="text/javascript")[34]
                 .get("id")
@@ -92,33 +94,34 @@ class GakuenAPI:
                 .lstrip("#funcForm:")
             )
             # クラス tag
-            classs_tag = []
-            for index, h in enumerate(soup.find_all("div", class_="lessonHead")):
-                for tag_data in h.find_all("span", class_="signLesson"):
-                    classs_tag.append(
-                        ({tag_data.get("class")[1]: tag_data.text}, index)
-                    )
+            classs_tag = [
+                ({tag_data.get("class")[1]: tag_data.text}, index)
+                for index, h in enumerate(soup.find_all("div", class_="lessonHead"))
+                for tag_data in h.find_all("span", class_="signLesson")
+            ]
             # クラス 教室変更
             for c in soup.find_all("div", class_="lessonMain"):
-                lessonTitle = c.find("p").text.strip().replace("\u3000", " ")
+                p_tag = c.find("p")
+                span_tag = p_tag.find("span")
+                span_text = span_tag.text if span_tag else ""
+                lessonTitle = p_tag.text.strip().replace(span_text, "").replace("\u3000", " ")
                 if lessonTitle in self.class_list:
                     continue
 
                 lessonDetail = c.find("div", class_="lessonDetail")
                 lessonTeachers = " / ".join(
-                    teacher.text.replace("\u3000", " ")
-                    for teacher in lessonDetail.find_all("a")
+                    teacher.text.replace("\u3000", " ") for teacher in lessonDetail.find_all("a")
                 )
 
                 if lessonDetail.find("label"):
                     __Class = lessonDetail.find_all("div")
-                    lessonClass = (
-                        f"変更: {__Class[2].text.strip()} → {__Class[0].text.strip()}"
-                    )
+                    lessonClass = f"変更: {__Class[2].text.strip()} → {__Class[0].text.strip()}"
                 else:
                     lessonClass = " / ".join(
                         _Class.text.strip() for _Class in lessonDetail.find_all("div")
                     )
+                    if span_text:
+                        lessonClass = f"{span_text}: {lessonClass}"
 
                 self.class_list[lessonTitle] = {
                     "lessonTeachers": lessonTeachers,
@@ -274,18 +277,17 @@ class GakuenAPI:
                 )
             return res["data"]
 
-    async def month_data(self, month: int) -> list:
+    async def month_data(self, year: int, month: int) -> list:
         """月の授業データを取得
 
         Args:
+            year (int): 年
             month (int): 月
 
         Returns:
             list: 授業データ
         """
-        month_start = (
-            str(int(datetime(datetime.now().year, month, 1).timestamp())) + "000"
-        )
+        month_start = str(int(datetime(year, month, 1).timestamp())) + "000"
         async with self.s.post(
             f"{self.hosts}/uprx/up/bs/bsa001/Bsa00101.xhtml",
             data={
@@ -309,6 +311,7 @@ class GakuenAPI:
                     "update", {"id": f"funcForm:{self.j_idt}:content"}
                 ).text.strip()
             )
+            new_events = []
             for m in course_list["events"]:
                 m["title"] = m["title"].replace("\u3000", " ").strip()
                 if not m["allDay"]:  # 1時間半単位の授業
@@ -317,15 +320,17 @@ class GakuenAPI:
                         m["start"] = m["start"] - timedelta(days=1)
                     elif m["title"] == "ホームゼミII 出原 至道":
                         m["start"] = m["start"] + timedelta(days=3)
-                    m["end"] = m["start"] + timedelta(minutes=90)
+                    m["end"] = datetime.strptime(m["end"], "%Y-%m-%dT%H:%M:%S%z")
                 else:  # 1日単位の授業
-                    t = datetime.strptime(m["start"], "%Y-%m-%dT%H:%M:%S%z")
-                    m["start"] = date(t.year, t.month, t.day) + timedelta(days=1)
-                    m["end"] = date(t.year, t.month, t.day) + timedelta(days=2)
+                    if m["className"] == "eventKeijiAd":
+                        continue
+                    m["start"] = datetime.strptime(m["start"], "%Y-%m-%dT%H:%M:%S%z")
+                    m["end"] = datetime.strptime(m["end"], "%Y-%m-%dT%H:%M:%S%z")
                 if m["title"] in self.class_list:  # 授業名が一致するものがあれば
                     m["teacher"] = self.class_list[m["title"]]["lessonTeachers"]
                     m["room"] = self.class_list[m["title"]]["lessonClass"]
-        return course_list["events"]
+                new_events.append(m)
+        return new_events
 
     async def kadai_data(self) -> list:
         """課題データを取得
@@ -376,10 +381,10 @@ class GakuenAPI:
 
     async def to_home_page(self):
         """ホームページに戻る
-        
+
         Raises:
             GakuenAPIError: ログインエラー
-            
+
         Returns:
             BeautifulSoup: ページデータ
         """

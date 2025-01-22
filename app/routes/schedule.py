@@ -44,11 +44,13 @@ async def send_schedule(username: str = None, password: str = None):
         cal.add("name", "多摩大スケジュール")
         cal.add("x-wr-calname", "多摩大スケジュール")
         cal.add("x-wr-timezone", "Etc/GMT")
+        now_year = datetime.now().year
         now_month = datetime.now().month
         for month in range(now_month, now_month + 2):
             if month > 12:
+                now_year += 1
                 month -= 12
-            course_list = await gakuen.month_data(month)
+            course_list = await gakuen.month_data(now_year, month)
             for course in course_list:
                 event = Event()
                 if not course["title"]: continue
