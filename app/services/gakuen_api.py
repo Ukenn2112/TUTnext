@@ -320,12 +320,14 @@ class GakuenAPI:
                         m["start"] = m["start"] - timedelta(days=1)
                     elif m["title"] == "ホームゼミII 出原 至道":
                         m["start"] = m["start"] + timedelta(days=3)
-                    m["end"] = datetime.strptime(m["end"], "%Y-%m-%dT%H:%M:%S%z")
+                    m["end"] = m["start"] + timedelta(minutes=90)
                 else:  # 1日単位の授業
                     if m["className"] == "eventKeijiAd":
                         continue
-                    m["start"] = datetime.strptime(m["start"], "%Y-%m-%dT%H:%M:%S%z")
-                    m["end"] = datetime.strptime(m["end"], "%Y-%m-%dT%H:%M:%S%z")
+                    t = datetime.strptime(m["start"], "%Y-%m-%dT%H:%M:%S%z")
+                    t_e = datetime.strptime(m["end"], "%Y-%m-%dT%H:%M:%S%z")
+                    m["start"] = date(t.year, t.month, t.day)
+                    m["end"] = date(t_e.year, t_e.month, t_e.day)
                 if m["title"] in self.class_list:  # 授業名が一致するものがあれば
                     m["teacher"] = self.class_list[m["title"]]["lessonTeachers"]
                     m["room"] = self.class_list[m["title"]]["lessonClass"]
