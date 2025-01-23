@@ -326,8 +326,8 @@ class GakuenAPI:
                         continue
                     t = datetime.strptime(m["start"], "%Y-%m-%dT%H:%M:%S%z")
                     t_e = datetime.strptime(m["end"], "%Y-%m-%dT%H:%M:%S%z")
-                    m["start"] = date(t.year, t.month, t.day)
-                    m["end"] = date(t_e.year, t_e.month, t_e.day)
+                    m["start"] = date(t.year, t.month, t.day) + timedelta(days=1)
+                    m["end"] = date(t_e.year, t_e.month, t_e.day) + timedelta(days=1)
                 if m["title"] in self.class_list:  # 授業名が一致するものがあれば
                     m["teacher"] = self.class_list[m["title"]]["lessonTeachers"]
                     m["room"] = self.class_list[m["title"]]["lessonClass"]
