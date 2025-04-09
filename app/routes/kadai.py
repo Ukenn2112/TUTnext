@@ -1,6 +1,6 @@
 # app/routes/kadai.py
 import traceback
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Response, status
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 import logging
 
@@ -66,7 +66,7 @@ test_data = [
 
 
 @router.post("")
-async def get_kadai(data: dict):
+async def get_kadai(data: dict, response: Response):
     username = data["username"]
     encryptedPassword = data["encryptedPassword"]
     if not username or not encryptedPassword:
@@ -77,9 +77,11 @@ async def get_kadai(data: dict):
     try:
         gakuen = GakuenAPI(username, "", "https://next.tama.ac.jp", encryptedPassword)
         kadai_list = await gakuen.get_user_kadai()
+        response.status_code = status.HTTP_200_OK
         return {"status": True, "data": kadai_list}
     except GakuenAPIError as e:
         logging.warning(f"[{username}] error: {e}")
+        response.status_code = status.HTTP_400_BAD_REQUEST
         return {
             "status": False,
             "message": str(e),
@@ -87,6 +89,7 @@ async def get_kadai(data: dict):
     except Exception as e:
         logging.error(f"[{username}] error: {e}")
         logging.error(f"Traceback: {traceback.format_exc()}")
+        response.status_code = status.HTTP_400_BAD_REQUEST
         return {
             "status": False,
             "message": str(e),

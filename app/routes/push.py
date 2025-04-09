@@ -1,5 +1,5 @@
 # app/routes/push.py
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Response, status
 import aiosqlite
 import os
 
@@ -34,8 +34,6 @@ async def send_push(data: dict, response: Response):
         response.status_code = status.HTTP_400_BAD_REQUEST
         return {"status": False, "message": "Missing required parameters, please provide username, encryptedPassword and deviceToken"}
     
-    print(f"send_push: {username}")
-    
     # 确保数据库已初始化
     await init_db()
     
@@ -69,8 +67,6 @@ async def unregister_push(data: dict, response: Response):
     if not deviceToken:
         response.status_code = status.HTTP_400_BAD_REQUEST
         return {"status": False, "message": "Missing required parameter deviceToken"}
-    
-    print(f"unregister_push: {deviceToken}")
     
     # 确保数据库已初始化
     await init_db()

@@ -1,13 +1,14 @@
 # push_server/push_pool.py
 import asyncio
 import logging
+import json
 
 from uuid import uuid4
 from aioapns import APNs, NotificationRequest, PushType
 from datetime import datetime, time
-from typing import Dict, List, Optional, Any, Literal
+from typing import Dict, Optional, Any, Literal
 
-from config import JAPAN_TZ, APNS_CONFIG
+from config import JAPAN_TZ, APNS_CONFIG, redis
 
 # 定义消息类型
 MessageType = Literal["alert", "background"]
@@ -17,7 +18,7 @@ class PushPool:
     def __init__(self, name: str, scheduled_time: Optional[time] = None):
         self.name = name
         self.scheduled_time = scheduled_time  # 为None表示实时推送池
-        self.messages: List[Dict[str, Any]] = []  # 所有通知消息
+        self.redis_key = f"push_pool:{name}"  # Redis中存储消息的键
 
     async def add_message(
         self,
@@ -40,7 +41,7 @@ class PushPool:
             "device_token": device_token,
             "data": data or {},
             "message_type": message_type,
-            "created_at": datetime.now(JAPAN_TZ),
+            "created_at": datetime.now(JAPAN_TZ).isoformat(),
         }
 
         # 对于普通通知类型，添加标题和内容
@@ -50,11 +51,15 @@ class PushPool:
             message["title"] = title
             message["body"] = body
 
-        self.messages.append(message)
+        # 将消息序列化为JSON并存储在Redis中
+        message_id = str(uuid4())
+        await redis.hset(self.redis_key, message_id, json.dumps(message))
 
         # 如果是实时推送池，立即发送
         if self.scheduled_time is None:
             await self.send_message(message)
+            # 发送后从Redis中删除消息
+            await redis.hdel(self.redis_key, message_id)
         else:
             logging.info(
                 f"{message_type} 消息已添加到 {self.name} 推送池，将在 {self.scheduled_time} (JST) 发送"
@@ -114,27 +119,35 @@ class PushPool:
 
     async def process_scheduled_messages(self):
         """处理并发送所有排队的消息"""
-        if not self.messages:
+        # 从Redis获取所有待处理消息
+        all_messages = await redis.hgetall(self.redis_key)
+        
+        if not all_messages:
             return
 
-        logging.info(f"开始处理 {self.name} 推送池中的 {len(self.messages)} 条消息")
+        logging.info(f"开始处理 {self.name} 推送池中的 {len(all_messages)} 条消息")
 
         sent_count = 0
         failed_count = 0
-        messages_to_remove = []
+        messages_to_delete = []
 
-        for message in self.messages:
+        for message_id, message_json in all_messages.items():
+            message = json.loads(message_json)
+            # 如果存储了ISO格式的日期时间，将其转换回datetime对象
+            if isinstance(message.get("created_at"), str):
+                message["created_at"] = datetime.fromisoformat(message["created_at"])
+            
             success = await self.send_message(message)
             if success:
                 sent_count += 1
-                messages_to_remove.append(message)
+                messages_to_delete.append(message_id)
             else:
                 failed_count += 1
-                messages_to_remove.append(message)
+                messages_to_delete.append(message_id)
 
-        # 移除已处理的消息
-        for message in messages_to_remove:
-            self.messages.remove(message)
+        # 从Redis中删除已成功处理的消息
+        if messages_to_delete:
+            await redis.hdel(self.redis_key, *messages_to_delete)
 
         logging.info(
             f"{self.name} 推送池处理完成: 成功 {sent_count}, 失败 {failed_count}"

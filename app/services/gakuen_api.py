@@ -240,7 +240,13 @@ class GakuenAPI:
                     "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
                 },
             ) as r:
+                if r.status != 200:
+                    raise GakuenAPIError(
+                        "ログインエラー: ログインページが取得できませんでした"
+                    )
                 soup = BeautifulSoup(await r.text(), "html.parser")
+                if error_msg := soup.find("span", class_="ui-messages-error-detail"):
+                    raise GakuenAPIError(f"ログインエラー: {error_msg.text}")
                 for input_tag in soup.find_all("input"):
                     name = input_tag.get("name")
                     value = input_tag.get("value")
@@ -280,30 +286,11 @@ class GakuenAPI:
                     },
                 ) as r:
                     soup = BeautifulSoup(await r.text(), "xml")
-                    # 找到包含未读公告的 update 标签
-                    # if main_key_content := soup.find("update", {"id": "pmPage:funcForm:j_id6"}):
-                    #     # 解析 CDATA 内容
-                    #     content_soup = BeautifulSoup(main_key_content.text, "html.parser")
-                    #     # 找到所有 input 标签
-                    #     for input_tag in content_soup.find_all("input"):
-                    #         name = input_tag.get("name")
-                    #         value = input_tag.get("value")
-                    #         if name == "rx-token":
-                    #             self.rx["token"] = value
-                    #         elif name == "rx-loginKey":
-                    #             self.rx["loginKey"] = value
-                    #         elif name == "rx-deviceKbn":
-                    #             self.rx["deviceKbn"] = value
-                    #         elif name == "rx-loginType":
-                    #             self.rx["loginType"] = value
-                    #         elif name == "javax.faces.ViewState":
-                    #             self.view_state = value
                     if main_content := soup.find(
                         "update", {"id": "pmPage:funcForm:mainContent"}
                     ):
                         # 解析 CDATA 内容
                         content_soup = BeautifulSoup(main_content.text, "html.parser")
-
                         if from_2 := content_soup.find(
                             "div", {"id": "pmPage:funcForm:j_idt103:2:j_idt104"}
                         ):
@@ -311,7 +298,6 @@ class GakuenAPI:
                             new_read_list = from_2.select(
                                 "li[class*='listIndent'][class*='newRead']"
                             )
-
                             announcements = []
                             for item in new_read_list:
                                 if link := item.find("a"):
