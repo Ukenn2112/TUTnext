@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TUTnext 非公式アプリ プライバシーポリシー</title>
+    <style>
+        /* Reset and base styles */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --primary-color: #ff69b4; /* メインカラー（青系） */
+            --accent-color: #ff69b4;  /* アクセントカラー */
+            --text-color: #333;      /* 主要テキスト色 */
+            --light-text: #666;      /* 薄いテキスト色 */
+            --bg-color: #f9f9f9;     /* 背景色 */
+            --card-bg: #fff;         /* カード背景色 */
+            --border-radius: 12px;   /* 角丸半径 */
+            --shadow: 0 2px 10px rgba(0, 0, 0, 0.05); /* 影 */
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, 
+                         Ubuntu, Cantarell, 'Helvetica Neue', sans-serif; /* システムフォント */
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--bg-color);
+            padding: 12px;
+            max-width: 100%;
+            margin: 0 auto;
+            font-size: 15px; /* モバイルに適したベースフォントサイズ */
+        }
+
+        /* ヘッダー部分 */
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 15px 0;
+        }
+
+        h1 {
+            font-size: 1.7em;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin-bottom: 0.5em;
+            line-height: 1.3;
+            letter-spacing: -0.02em;
+        }
+
+        h2 {
+            font-size: 1.3em;
+            font-weight: 600;
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: var(--primary-color);
+            border-left: 4px solid var(--accent-color);
+            padding-left: 10px;
+            line-height: 1.3;
+        }
+
+        h3 {
+            font-size: 1.1em;
+            margin-top: 1.2em;
+            margin-bottom: 0.5em;
+            font-weight: 600;
+        }
+
+        p {
+            margin-bottom: 1em;
+            line-height: 1.6;
+        }
+
+        /* リスト調整 */
+        ul, ol {
+            padding-left: 20px;
+            margin-bottom: 1em;
+        }
+
+        li {
+            margin-bottom: 0.6em;
+            line-height: 1.5;
+        }
+
+        /* 入れ子リストの調整 */
+        li > ul, 
+        li > ol {
+            margin-top: 0.5em;
+            margin-bottom: 0.5em;
+        }
+
+        a {
+            color: var(--accent-color);
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        a:hover, a:focus {
+            text-decoration: underline;
+        }
+
+        /* セクションカード */
+        .section {
+            background-color: var(--card-bg);
+            padding: 16px;
+            margin-bottom: 16px;
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+        }
+
+        /* 強調表示 */
+        strong {
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        /* フッター部分 */
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding: 15px 0;
+            font-size: 0.9em;
+            color: var(--light-text);
+        }
+
+        /* ダークモード対応 */
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --primary-color: #ff69b4;
+                --accent-color: #ff69b4;
+                --text-color: #e0e0e0;
+                --light-text: #b0b0b0;
+                --bg-color: #121212;
+                --card-bg: #1e1e1e;
+                --shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            }
+        }
+
+        /* レスポンシブ対応 */
+        @media screen and (min-width: 768px) {
+            body {
+                padding: 20px;
+                font-size: 16px;
+                max-width: 800px;
+            }
+
+            .section {
+                padding: 24px;
+                margin-bottom: 24px;
+            }
+
+            h1 {
+                font-size: 2em;
+            }
+
+            h2 {
+                font-size: 1.5em;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <h1>TUTnext 非公式アプリ<br>プライバシーポリシー</h1>
+    </div>
+
+    <div class="section">
+        <p>WAN MINGXUAN（以下「開発者」といいます）は、開発者が提供するiOS向けアプリケーション「TUTnext 非公式アプリ」（以下「本アプリ」といいます）における利用者情報の取り扱いについて、以下のとおりプライバシーポリシー（以下「本ポリシー」といいます）を定めます。</p>
+        <p>本アプリをご利用いただくためには、本ポリシーをご確認いただき、内容をご理解いただく必要があります。本ポリシーに同意いただけない場合は、本アプリのご利用をお控えください。</p>
+    </div>
+
+    <div id="section1" class="section">
+        <h2>第1条 取得する情報及び利用目的</h2>
+        <p>開発者は、本アプリの提供にあたり、以下の情報を取得または利用者からご提供いただき、それぞれの目的のために利用します。</p>
+        <ul>
+            <li><strong>デバイストークン（Push通知用識別子）</strong><br>
+                利用目的： 本アプリに関する新着情報等をプッシュ通知でお知らせするため。</li>
+            <li><strong>位置情報（緯度・経度）</strong><br>
+                利用目的： 利用者の現在地に基づき、最寄りのバス停を判断し、バス時刻表を自動的に並べ替える機能を提供するため。位置情報は、当該機能の提供に必要な場合にのみ取得・利用し、利用者の移動履歴等を追跡・保存するものではありません。</li>
+            <li><strong>機種名・OSバージョン等の端末情報（利用者から提供された場合）</strong><br>
+                利用目的： 利用者からのお問い合わせ、ご意見、不具合報告等に対応する際、発生状況の特定や調査、およびサービス改善に役立てるため。（本情報は、主にお問い合わせ等の際に利用者ご自身からご提供いただくものです。本アプリが自動的に収集することはありません。）</li>
+        </ul>
+        <p>上記以外の個人情報（氏名、住所、電話番号、メールアドレスなど）を、利用者の入力なく取得することはありません。</p>
+    </div>
+
+    <div id="section2" class="section">
+        <h2>第2条 情報の管理</h2>
+        <p>開発者は、取得した利用者情報を、利用目的の達成に必要な範囲内で、正確かつ最新の内容に保つよう努めます。また、不正アクセス、紛失、破壊、改ざん、漏洩などを防止するため、適切な技術的・組織的な安全管理措置を講じます。</p>
+    </div>
+
+    <div id="section3" class="section">
+        <h2>第3条 第三者提供</h2>
+        <p>開発者は、取得した利用者情報を、以下の場合を除き、利用者の同意なく第三者に提供することはありません。</p>
+        <ul>
+            <li>法令に基づく場合（警察、裁判所等からの要請があった場合など）</li>
+            <li>人の生命、身体または財産の保護のために必要がある場合であって、本人の同意を得ることが困難であるとき</li>
+            <li>公衆衛生の向上または児童の健全な育成の推進のために特に必要がある場合であって、本人の同意を得ることが困難であるとき</li>
+            <li>国の機関もしくは地方公共団体またはその委託を受けた者が法令の定める事務を遂行することに対して協力する必要がある場合であって、本人の同意を得ることにより当該事務の遂行に支障を及ぼすおそれがあるとき</li>
+            <li>利用目的の達成に必要な範囲内において、情報の取り扱いに関する業務の全部または一部を委託する場合（委託先に対しては、適切な監督を行います）</li>
+        </ul>
+        <p>なお、プッシュ通知の配信にあたり、Apple Inc.が提供する通知サービスを利用しますが、これは本アプリの機能実現のために必要なものであり、上記の第三者提供には該当しないものとします。</p>
+    </div>
+
+    <div id="section4" class="section">
+        <h2>第4条 利用者の権利</h2>
+        <p>利用者は、開発者が保有する自身の利用者情報について、開示、訂正、追加、削除、利用停止等を求めることができます。これらの請求を行う場合は、第７条のお問い合わせ窓口までご連絡ください。ご本人確認を行った上で、合理的な範囲で速やかに対応いたします。ただし、情報の削除等により、本アプリの一部または全部の機能が利用できなくなる場合があります。</p>
+    </div>
+
+    <div id="section5" class="section">
+        <h2>第5条 情報の保持期間</h2>
+        <p>開発者は、取得した利用者情報を、利用目的の達成に必要な期間、または法令等で定められた期間保持します。保持期間経過後は、適切な方法で速やかに消去または匿名化処理を行います。</p>
+    </div>
+
+    <div id="section6" class="section">
+        <h2>第6条 プライバシーポリシーの変更</h2>
+        <p>開発者は、法令の変更やサービス内容の変更等に伴い、本ポリシーを改定することがあります。重要な変更を行う場合には、本アプリ内での通知や開発者のウェブサイト等、適切と判断する方法で事前に告知します。変更後のプライバシーポリシーは、本アプリ内等に掲載された時点から効力を生じるものとします。</p>
+    </div>
+
+    <div id="section7" class="section">
+        <h2>第7条 お問い合わせ窓口</h2>
+        <p>本ポリシーに関するご質問、ご意見、または第４条に基づく請求等は、以下の窓口までご連絡ください。</p>
+        <p>
+            開発者: WAN MINGXUAN<br>
+            連絡先: <a href="mailto:admin@ukenn.top">admin@ukenn.top</a>
+        </p>
+    </div>
+
+    <div class="footer">
+        <p>制定： 2025年3月31日</p>
+    </div>
+</body>
+
+</html>

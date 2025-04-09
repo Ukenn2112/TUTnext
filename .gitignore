@@ -3,3 +3,4 @@ next.log
 .DS_Store
 __pycache__
 test_main.py
+*.p8

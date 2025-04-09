@@ -1,11 +1,10 @@
 # app/main.py
 import os
-import app.config
 from pydantic import BaseModel
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
-from app.routes import schedule, bus
+from app.routes import schedule, bus, kadai, push
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 
 
@@ -19,12 +18,26 @@ app = FastAPI()
 # Include other routes
 app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
 app.include_router(bus.router, prefix="/bus", tags=["Bus"])
+app.include_router(kadai.router, prefix="/kadai", tags=["Kadai"])
+app.include_router(push.router, prefix="/push", tags=["Push"])
 
 
 # Home page
 @app.get("/")
 async def help_page():
     return FileResponse(os.path.join("app", "static", "index.html"))
+
+
+# User agreement page
+@app.get("/user-agreement")
+async def user_agreement_page():
+    return FileResponse(os.path.join("app", "static", "user-agreement.html"))
+
+
+# Policy page
+@app.get("/policy")
+async def policy_page():
+    return FileResponse(os.path.join("app", "static", "policy.html"))
 
 
 @app.post("/login_check")

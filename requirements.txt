@@ -5,3 +5,8 @@ aiosqlite
 icalendar
 lxml
 beautifulsoup4
+aioredis
+aioapns
+pytz
+PyJWT==2.6.0
+cryptography==37.0.4

@@ -20,24 +20,24 @@ async def send_schedule(username: str = None, password: str = None):
     gakuen = GakuenAPI(username, password, "https://next.tama.ac.jp")
     logging.info(f"login: 学籍番号: {username}")
     try:
-        web_login_data = await gakuen.webapi_login()  # webapi login
+        # web_login_data = await gakuen.webapi_login()  # webapi login
         await gakuen.login()
-        if web_login_data["userShkbtKbn"] == "Student":
-            # webapi data start
-            api_class_data = await gakuen.class_bulletin()
-            for i in api_class_data["jgkmDtoList"]:
-                if i["jugyoName"] in gakuen.class_list:
-                    class_status = await gakuen.class_data_info(i)
-                    chuqian = class_status["attInfoDtoList"][0]
-                    if chuqian["kessekiKaisu"] > 0 and "ゼミ" not in i["jugyoName"]:
-                        gakuen.class_list[i["jugyoName"]][
-                            "lessonClass"
-                        ] += f" 欠席回数 {chuqian['kessekiKaisu']}"
-                    chuqian_text = f"出欠情报: 出席 {chuqian['shusekiKaisu']} 欠席 {chuqian['kessekiKaisu']} 遅刻 {chuqian['chikokKaisu']} 早退 {chuqian['sotaiKaisu']} 公欠 {chuqian['koketsuKaisu']}"
-                    gakuen.class_list[i["jugyoName"]]["lessonTeachers"] += (
-                        "\n\n" + chuqian_text
-                    )
-            # webapi data end
+        # if web_login_data["userShkbtKbn"] == "Student":
+        #     # webapi data start
+        #     api_class_data = await gakuen.class_bulletin()
+        #     for i in api_class_data["jgkmDtoList"]:
+        #         if i["jugyoName"] in gakuen.class_list:
+        #             class_status = await gakuen.class_data_info(i)
+        #             chuqian = class_status["attInfoDtoList"][0]
+        #             if chuqian["kessekiKaisu"] > 0 and "ゼミ" not in i["jugyoName"]:
+        #                 gakuen.class_list[i["jugyoName"]][
+        #                     "lessonClass"
+        #                 ] += f" 欠席回数 {chuqian['kessekiKaisu']}"
+        #             chuqian_text = f"出欠情报: 出席 {chuqian['shusekiKaisu']} 欠席 {chuqian['kessekiKaisu']} 遅刻 {chuqian['chikokKaisu']} 早退 {chuqian['sotaiKaisu']} 公欠 {chuqian['koketsuKaisu']}"
+        #             gakuen.class_list[i["jugyoName"]]["lessonTeachers"] += (
+        #                 "\n\n" + chuqian_text
+        #             )
+        #     # webapi data end
         cal = Calendar()
         cal.add("prodid", "-//Ukenn//TamaSchedule//")
         cal.add("version", "2.0")
