@@ -57,6 +57,7 @@ async def monitor_task(
                         deviceToken,
                         "【注意】課題の締切が近づいています！",
                         f"授業「{kadai['courseName']}」の課題の締切が近づいています！\n締め切り: {kadai['dueDate']} {kadai['dueTime']}",
+                        {"toPage": "assignment"},
                     )
                     # 将课题标识符存储到Redis，设置过期时间为1小时
                     await redis.setex(
@@ -152,6 +153,7 @@ async def check_tmrw_course_user_push(
                     deviceToken,
                     "【注意】次の授業の教室変更あり",
                     f"「{t['name']}」の教室が{t['room']}に変更されました。",
+                    {"toPage": "timetable"},
                 )
             logging.info(f"用户 {username} 的推送教室变更消息已添加到推送池")
         except Exception as e:
