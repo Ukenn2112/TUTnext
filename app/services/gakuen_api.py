@@ -856,10 +856,6 @@ class GakuenAPI:
                 m["title"] = m["title"].replace("\u3000", " ").strip()
                 if not m["allDay"]:  # 1時間半単位の授業
                     m["start"] = datetime.strptime(m["start"], "%Y-%m-%dT%H:%M:%S%z")
-                    if m["title"] == "ホームゼミII 小林 英夫":
-                        m["start"] = m["start"] - timedelta(days=1)
-                    elif m["title"] == "ホームゼミII 出原 至道":
-                        m["start"] = m["start"] + timedelta(days=3)
                     m["end"] = m["start"] + timedelta(minutes=90)
                 else:  # 1日単位の授業
                     if m["className"] == "eventKeijiAd":

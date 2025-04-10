@@ -1,6 +1,8 @@
-# TUTnext
+# TUTnext & APP Backend
 
 Tama University 多摩大スケジュール自動生成システム
+
+TUTnext Application Backend
 
 <img width="1000" alt="image" src="https://github.com/user-attachments/assets/ab58cabe-f529-4a32-a433-0178adea3a10">
 
