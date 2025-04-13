@@ -2,5 +2,5 @@ next.log
 *.db
 .DS_Store
 __pycache__
-test_main.py
+test_*.py
 *.p8

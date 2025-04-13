@@ -90,7 +90,7 @@ class PushPool:
                     },
                     **message["data"],
                 }
-                push_type = None
+                push_type = PushType.BACKGROUND
                 log_info = str(message["data"])
 
             notification = NotificationRequest(

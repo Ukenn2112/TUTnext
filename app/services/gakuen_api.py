@@ -657,18 +657,6 @@ class GakuenAPI:
                                             kadai_data["publish_end"] = spans[
                                                 2
                                             ].text.strip()
-                                            if due_date := re.search(
-                                                r"(\d{4}/\d{2}/\d{2})", spans[2].text
-                                            ):
-                                                kadai_data["dueDate"] = due_date.group(
-                                                    1
-                                                ).replace("/", "-")
-                                            if due_time := re.search(
-                                                r"(\d{2}:\d{2})", spans[2].text
-                                            ):
-                                                kadai_data["dueTime"] = due_time.group(
-                                                    1
-                                                )
                                 if kadai_submit_period := kadai_info.find(
                                     "label", string=lambda s: s and "課題提出期間" in s
                                 ):
@@ -683,6 +671,18 @@ class GakuenAPI:
                                             kadai_data["submit_end"] = spans[
                                                 2
                                             ].text.strip()
+                                            if due_date := re.search(
+                                                r"(\d{4}/\d{2}/\d{2})", spans[2].text
+                                            ):
+                                                kadai_data["dueDate"] = due_date.group(
+                                                    1
+                                                ).replace("/", "-")
+                                            if due_time := re.search(
+                                                r"(\d{2}:\d{2})", spans[2].text
+                                            ):
+                                                kadai_data["dueTime"] = due_time.group(
+                                                    1
+                                                )
                                 if kadai_content := kadai_info.find(
                                     "label", text="課題内容"
                                 ).parent.find_next_sibling("li"):
@@ -710,7 +710,7 @@ class GakuenAPI:
                                 kadai_data["url"] = (
                                     f"{self.hosts}/uprx/up/pk/pky501/Pky50101.xhtml?webApiLoginInfo=%7B%22password%22%3A%22%22%2C%22autoLoginAuthCd%22%3A%22%22%2C%22encryptedPassword%22%3A%22{self.encryptedLoginPassword}%22%2C%22userId%22%3A%22{self.userId}%22%2C%22parameterMap%22%3A%22%22%7D"
                                 )
-                            kadai_list.append(kadai_data)
+                                kadai_list.append(kadai_data)
                         # 返回課題列表
                         async with self.s.post(
                             f"{self.hosts}/uprx/up/jg/jga505/Jga50503.xhtml",

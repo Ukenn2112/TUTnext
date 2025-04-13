@@ -124,6 +124,7 @@ async def check_tmrw_course_user_push(
             for t in data["time_table"]:
                 if "previous_room" not in t:
                     continue
+                t["room"] = t["room"].replace("教室", "")
                 push_data = {
                     "updateType": "roomChange",
                     "name": t["name"],
