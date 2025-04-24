@@ -636,11 +636,13 @@ class GakuenAPI:
                             # 課題インフォ
                             if kadai_info := soup.find("ul", class_="tableData"):
                                 if kadai_group := kadai_info.find(
-                                    "label", text="課題グループ"
+                                    "label", string=lambda s: s and "グループ" in s
                                 ).parent.find_next_sibling("li"):
                                     kadai_data["group"] = kadai_group.text.strip()
                                 if kadai_title := kadai_info.find(
-                                    "label", text="課題名"
+                                    "label",
+                                    string=lambda s: s
+                                    and (s == "課題名" or s == "テスト名"),
                                 ).parent.find_next_sibling("li"):
                                     kadai_data["title"] = kadai_title.text.strip()
                                 if kadai_public_period := kadai_info.find(
@@ -658,7 +660,9 @@ class GakuenAPI:
                                                 2
                                             ].text.strip()
                                 if kadai_submit_period := kadai_info.find(
-                                    "label", string=lambda s: s and "課題提出期間" in s
+                                    "label",
+                                    string=lambda s: s
+                                    and (s == "課題提出期間" or s == "テスト期間"),
                                 ):
                                     if submit_li := kadai_submit_period.parent.find_next_sibling(
                                         "li"
@@ -683,8 +687,29 @@ class GakuenAPI:
                                                 kadai_data["dueTime"] = due_time.group(
                                                     1
                                                 )
+                                        elif len(spans) == 2:
+                                            kadai_data["submit_start"] = spans[
+                                                0
+                                            ].text.strip()
+                                            kadai_data["submit_end"] = spans[
+                                                1
+                                            ].text.strip()
+                                            if due_date := re.search(
+                                                r"(\d{4}/\d{2}/\d{2})", spans[1].text
+                                            ):
+                                                kadai_data["dueDate"] = due_date.group(
+                                                    1
+                                                ).replace("/", "-")
+                                            if due_time := re.search(
+                                                r"(\d{2}:\d{2})", spans[1].text
+                                            ):
+                                                kadai_data["dueTime"] = due_time.group(
+                                                    1
+                                                )
                                 if kadai_content := kadai_info.find(
-                                    "label", text="課題内容"
+                                    "label",
+                                    string=lambda s: s
+                                    and (s == "課題内容" or s == "テスト説明"),
                                 ).parent.find_next_sibling("li"):
                                     kadai_data["description"] = (
                                         kadai_content.text.strip()

@@ -37,15 +37,65 @@ async def monitor_task(
                         f"用户 {username} 获取课题数据失败，重试第 {retry_count} 次: {api_error}"
                     )
                     await asyncio.sleep(2)  # 等待2秒后重试
+            # 用户课题数量存在Redis中
+            if await redis.exists(f"kadai_count:{username}"):
+                old_kadai_count = int(await redis.get(f"kadai_count:{username}"))
+                if len(kadai_list) == 0:
+                    # 课题数量为 0 时，删除Redis中的课题数量，并推送后台消息
+                    await redis.delete(f"kadai_count:{username}")
+                    await push_manager.add_background_message_to_pool(
+                        "realtime",
+                        deviceToken,
+                        {"updateType": "kaidaiNumChange", "num": 0},
+                    )
+                elif old_kadai_count < len(kadai_list):  # 课题数量增加
+                    # 更新Redis中的课题数量，并推送消息
+                    await redis.set(f"kadai_count:{username}", len(kadai_list))
+                    await push_manager.add_background_message_to_pool(
+                        "realtime",
+                        deviceToken,
+                        {"updateType": "kaidaiNumChange", "num": len(kadai_list)},
+                    )
+                    await push_manager.add_message_to_pool(
+                        "realtime",
+                        deviceToken,
+                        "新しい課題が追加されました",
+                        "詳しくはこのメッセージをタップしてください",
+                        {"toPage": "assignment"},
+                    )
+                elif old_kadai_count > len(kadai_list):  # 课题数量减少
+                    # 更新Redis中的课题数量，并推送后台消息
+                    await redis.set(f"kadai_count:{username}", len(kadai_list))
+                    await push_manager.add_background_message_to_pool(
+                        "realtime",
+                        deviceToken,
+                        {"updateType": "kaidaiNumChange", "num": len(kadai_list)},
+                    )
+            else:
+                if len(kadai_list) > 0: # 课题数量大于 0 时，设置Redis中的课题数量，并推送后台消息
+                    await redis.set(f"kadai_count:{username}", len(kadai_list))
+                    await push_manager.add_background_message_to_pool(
+                        "realtime",
+                        deviceToken,
+                        {"updateType": "kaidaiNumChange", "num": len(kadai_list)},
+                    )
+                    await push_manager.add_message_to_pool(
+                        "realtime",
+                        deviceToken,
+                        "新しい課題が追加されました",
+                        "詳しくはこのメッセージをタップしてください",
+                        {"toPage": "assignment"},
+                    )
             if not kadai_list:
                 logging.info(f"用户 {username} 没有课题")
                 return
             now_time = datetime.now(JAPAN_TZ)
             for kadai in kadai_list:
-                kadai_due_time = datetime.strptime(
+                naive_due_time = datetime.strptime(
                     f"{kadai['dueDate']} {kadai['dueTime']}", "%Y-%m-%d %H:%M"
-                ).astimezone(JAPAN_TZ)
-                if kadai_due_time - now_time < timedelta(hours=1):
+                )
+                kadai_due_time = JAPAN_TZ.localize(naive_due_time)
+                if (kadai_due_time - now_time) < timedelta(hours=1):
                     # 生成唯一的课题标识符
                     kadai_id = f"{username}:{kadai['courseId']}:{kadai['title']}{kadai.get('description', '')}"
                     # 检查是否已经推送过这个课题
