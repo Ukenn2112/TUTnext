@@ -726,6 +726,15 @@ async def app_schedule():
     web_data = get("https://www.tama.ac.jp/guide/campus/schoolbus.html")
     soup = BeautifulSoup(web_data.text, "html.parser")
     _messages = []
+    holidays_data = get("https://holidays-jp.github.io/api/v1/date.json").json()
+    now_day_str = datetime.now().strftime("%Y-%m-%d")
+    if now_day_str in holidays_data:
+        _messages.append(
+            {
+                "title": f"本日 {now_day_str} 祝日授業日のスクールバス時刻表 ",
+                "url": "https://www.tama.ac.jp/guide/campus/img/bus_2025holidays.pdf",
+            }
+        )
     if _web_data := soup.find("div", class_="rinji"):
         for web_data in _web_data.find_all("a"):
             _messages.append(
@@ -735,13 +744,4 @@ async def app_schedule():
                     + web_data.get("href"),
                 }
             )
-    holidays_data = get("https://holidays-jp.github.io/api/v1/date.json").json()
-    now_day_str = datetime.now().strftime("%Y-%m-%d")
-    if now_day_str in holidays_data:
-        _messages.append(
-            {
-                "title": f"{now_day_str} 祝日授業日のスクールバス時刻表 ",
-                "url": "https://www.tama.ac.jp/guide/campus/img/bus_2025holidays.pdf",
-            }
-        )
     return {"messages": _messages, "data": app_data}

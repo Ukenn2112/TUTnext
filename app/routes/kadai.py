@@ -1,8 +1,11 @@
 # app/routes/kadai.py
+import json
+import logging
 import traceback
 from fastapi import APIRouter, Response, status
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
-import logging
+
+from config import redis
 
 router = APIRouter()
 
@@ -70,18 +73,27 @@ async def get_kadai(data: dict, response: Response):
     username = data["username"]
     encryptedPassword = data["encryptedPassword"]
     if not username or not encryptedPassword:
+        response.status_code = status.HTTP_400_BAD_REQUEST
         return {
             "status": False,
             "message": "学籍番号またはパスワードを入力してください",
         }
     try:
-        gakuen = GakuenAPI(username, "", "https://next.tama.ac.jp", encryptedPassword)
-        kadai_list = await gakuen.get_user_kadai()
+        if await redis.exists(f"{username}:kadai"):
+            # 如果缓存中存在数据，则直接返回
+            redis_kadai_list = await redis.get(f"{username}:kadai")
+            kadai_list = json.loads(redis_kadai_list)
+        else:
+            gakuen = GakuenAPI(
+                username, "", "https://next.tama.ac.jp", encryptedPassword
+            )
+            kadai_list = await gakuen.get_user_kadai()
+            await redis.set(f"{username}:kadai", json.dumps(kadai_list), ex=60) # 缓存用户课题
         response.status_code = status.HTTP_200_OK
         return {"status": True, "data": kadai_list}
     except GakuenAPIError as e:
         logging.warning(f"[{username}] error: {e}")
-        response.status_code = status.HTTP_400_BAD_REQUEST
+        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
         return {
             "status": False,
             "message": str(e),
@@ -89,10 +101,11 @@ async def get_kadai(data: dict, response: Response):
     except Exception as e:
         logging.error(f"[{username}] error: {e}")
         logging.error(f"Traceback: {traceback.format_exc()}")
-        response.status_code = status.HTTP_400_BAD_REQUEST
+        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
         return {
             "status": False,
             "message": str(e),
         }
     finally:
-        await gakuen.close()
+        if "gakuen" in locals():
+            await gakuen.close()

@@ -1,4 +1,5 @@
 # push_server/send_push.py
+import json
 import asyncio
 import aiosqlite
 import logging
@@ -26,7 +27,7 @@ async def monitor_task(
                         username, encryptedPassword
                     )
                     break  # 如果成功获取数据，跳出循环
-                except GakuenAPIError as api_error:
+                except Exception as api_error:
                     retry_count += 1
                     if retry_count >= max_retries:
                         logging.error(
@@ -86,6 +87,7 @@ async def monitor_task(
                         "詳しくはこのメッセージをタップしてください",
                         {"toPage": "assignment"},
                     )
+            await redis.set(f"{username}:kadai", json.dumps(kadai_list), ex=180) # 缓存用户课题
             if not kadai_list:
                 logging.info(f"用户 {username} 没有课题")
                 return
