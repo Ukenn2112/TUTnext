@@ -434,16 +434,22 @@ class GakuenAPI:
                     class_data = {}
 
                     # 时间
-                    time_header = item.find("div", class_="jknbtHdr")
+                    time_header = item.find("div", class_="jugyoInfoArea")
                     if time_header:
+                        # 去除时间信息中的span[@floatRight]标签
+                        if _fr := time_header.find("span", class_="floatRight"):
+                            _fr.extract()
                         class_data["time"] = time_header.text.strip()
                         # 检查是否有教室变更标记
-                        change_room_tag = time_header.find("span", class_="signLesson")
-                        if change_room_tag:
-                            class_data["special_tag"] = change_room_tag.text.strip()
-                            class_data["time"] = class_data["time"].replace(
-                                class_data["special_tag"], ""
-                            )
+                        if change_room_tag := time_header.find_all(
+                            "span", class_="signLesson"
+                        ):
+                            class_data["special_tags"] = []
+                            for tag in change_room_tag:
+                                class_data["special_tags"].append(tag.text.strip())
+                                class_data["time"] = class_data["time"].replace(
+                                    tag.text.strip(), ""
+                                )
                         if "09:00" in class_data["time"]:
                             class_data["lesson_num"] = 1
                         elif "10:40" in class_data["time"]:
@@ -555,6 +561,32 @@ class GakuenAPI:
                     self.rx["loginType"] = value
                 elif name == "javax.faces.ViewState":
                     self.view_state = value
+            if soup.find("span", class_="questTitle"):  # 重要アンケートがある場合
+                soup = await self.to_home_page()
+                self.rx["token"] = soup.find("input", {"name": "rx-token"}).get("value")
+                self.view_state = soup.find(
+                    "input", {"name": "javax.faces.ViewState"}
+                ).get("value")
+                async with self.s.post(
+                    f"{self.hosts}/uprx/up/bs/bsa501/Bsa50101.xhtml",
+                    data={
+                        "pmPage:funcForm": "pmPage:funcForm",
+                        "rx-token": self.rx["token"],
+                        "rx-loginKey": self.rx["loginKey"],
+                        "rx-deviceKbn": self.rx["deviceKbn"],
+                        "rx-loginType": self.rx["loginType"],
+                        "pmPage:funcForm:j_idt107_active": "0,1",
+                        "javax.faces.ViewState": self.view_state,
+                        "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
+                        "rx.sync.source": "pmPage:funcForm:j_idt107:j_idt126",
+                        "pmPage:funcForm:j_idt107:j_idt126": "pmPage:funcForm:j_idt107:j_idt126",
+                    },
+                ) as r:
+                    soup = BeautifulSoup(await r.text(), "html.parser")
+                    self.rx["token"] = soup.find("input", {"name": "rx-token"}).get("value")
+                    self.view_state = soup.find(
+                        "input", {"name": "javax.faces.ViewState"}
+                    ).get("value")
         async with self.s.post(
             f"{self.hosts}/uprx/up/bs/bsa501/Bsa50101.xhtml",
             data={

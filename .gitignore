@@ -1,6 +1,7 @@
 next.log
-*.db
+*.db*
 .DS_Store
 __pycache__
 test_*.py
 *.p8
+tmail.py

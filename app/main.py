@@ -4,7 +4,7 @@ from pydantic import BaseModel
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
-from app.routes import schedule, bus, kadai, push
+from app.routes import schedule, bus, kadai, push, tmail
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 
 
@@ -20,6 +20,7 @@ app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
 app.include_router(bus.router, prefix="/bus", tags=["Bus"])
 app.include_router(kadai.router, prefix="/kadai", tags=["Kadai"])
 app.include_router(push.router, prefix="/push", tags=["Push"])
+app.include_router(tmail.router, prefix="/tmail", tags=["Tmail"])
 
 
 # Home page

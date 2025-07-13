@@ -27,6 +27,7 @@ class PushPool:
         message_type: MessageType = "alert",
         title: Optional[str] = None,
         body: Optional[str] = None,
+        interruption_level: Optional[str] = None,
     ):
         """添加消息到推送池
 
@@ -50,6 +51,7 @@ class PushPool:
                 raise ValueError("alert类型的消息必须提供title和body")
             message["title"] = title
             message["body"] = body
+            message["interruption-level"] = interruption_level
 
         # 将消息序列化为JSON并存储在Redis中
         message_id = str(uuid4())
@@ -70,7 +72,6 @@ class PushPool:
         try:
             message_type = message["message_type"]
             message_payload = {}
-
             if message_type == "alert":
                 # 普通通知消息
                 message_payload = {
@@ -80,6 +81,8 @@ class PushPool:
                     },
                     **message["data"],
                 }
+                if interruption_level := message.get("interruption-level"):
+                    message_payload["aps"]["interruption-level"] = interruption_level
                 push_type = PushType.ALERT
                 log_info = message["title"]
             else:
@@ -179,6 +182,7 @@ class PushPoolManager:
         device_token: str,
         title: str,
         body: str,
+        interruption_level: Optional[str] = None,
         data: Optional[Dict] = None,
     ):
         """添加普通通知消息到指定的推送池"""
@@ -190,6 +194,7 @@ class PushPoolManager:
             title=title,
             body=body,
             data=data,
+            interruption_level=interruption_level,
             message_type="alert",
         )
 

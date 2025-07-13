@@ -1,12 +1,12 @@
 # push_server/send_push.py
 import json
 import asyncio
-import aiosqlite
 import logging
 
 from datetime import datetime, timedelta
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 from push_server.push_pool import PushPoolManager
+from app.database import db_manager
 from config import JAPAN_TZ, redis
 
 
@@ -19,7 +19,7 @@ async def monitor_task(
         # 为每个用户创建新的GakuenAPI实例
         gakuen = GakuenAPI("", "", "https://next.tama.ac.jp")
         try:
-            max_retries = 3
+            max_retries = 5
             retry_count = 0
             while retry_count < max_retries:
                 try:
@@ -28,6 +28,12 @@ async def monitor_task(
                     )
                     break  # 如果成功获取数据，跳出循环
                 except Exception as api_error:
+                    if "パスワードが正しくありません" in str(api_error):
+                        logging.warning(
+                            f"用户 {username} 的密码错误，无法获取课题数据: {api_error}"
+                        )
+                        await db_manager.delete_user(username)
+                        return
                     retry_count += 1
                     if retry_count >= max_retries:
                         logging.error(
@@ -62,7 +68,7 @@ async def monitor_task(
                         deviceToken,
                         "新しい課題が追加されました",
                         "詳しくはこのメッセージをタップしてください",
-                        {"toPage": "assignment"},
+                        data={"toPage": "assignment"},
                     )
                 elif old_kadai_count > len(kadai_list):  # 课题数量减少
                     # 更新Redis中的课题数量，并推送后台消息
@@ -73,7 +79,9 @@ async def monitor_task(
                         {"updateType": "kaidaiNumChange", "num": len(kadai_list)},
                     )
             else:
-                if len(kadai_list) > 0: # 课题数量大于 0 时，设置Redis中的课题数量，并推送后台消息
+                if (
+                    len(kadai_list) > 0
+                ):  # 课题数量大于 0 时，设置Redis中的课题数量，并推送后台消息
                     await redis.set(f"kadai_count:{username}", len(kadai_list))
                     await push_manager.add_background_message_to_pool(
                         "realtime",
@@ -85,9 +93,11 @@ async def monitor_task(
                         deviceToken,
                         "新しい課題が追加されました",
                         "詳しくはこのメッセージをタップしてください",
-                        {"toPage": "assignment"},
+                        data={"toPage": "assignment"},
                     )
-            await redis.set(f"{username}:kadai", json.dumps(kadai_list), ex=180) # 缓存用户课题
+            await redis.set(
+                f"{username}:kadai", json.dumps(kadai_list), ex=180
+            )  # 缓存用户课题
             if not kadai_list:
                 logging.info(f"用户 {username} 没有课题")
                 return
@@ -109,7 +119,8 @@ async def monitor_task(
                         deviceToken,
                         "【注意】課題の締切が近づいています！",
                         f"授業「{kadai['courseName']}」の課題の締切が近づいています！\n締め切り: {kadai['dueDate']} {kadai['dueTime']}",
-                        {"toPage": "assignment"},
+                        interruption_level="time-sensitive",
+                        data={"toPage": "assignment"},
                     )
                     # 将课题标识符存储到Redis，设置过期时间为1小时
                     await redis.setex(
@@ -153,38 +164,27 @@ async def check_tmrw_course_user_push(
                         f"用户 {username} 获取课程数据失败，重试第 {retry_count} 次: {api_error}"
                     )
                     await asyncio.sleep(2)  # 等待2秒后重试
-            if all_day_events := data["all_day_events"]:
-                for event in all_day_events:
-                    if "SMIS:授業" in event["title"]:
-                        await push_manager.add_message_to_pool(
-                            "night_9pm",
-                            deviceToken,
-                            "明日の授業のお知らせ",
-                            event["title"],
-                        )
-                        await push_manager.add_message_to_pool(
-                            "morning_7am",
-                            deviceToken,
-                            "本日の授業のお知らせ",
-                            event["title"],
-                        )
-                        continue
+            # if all_day_events := data["all_day_events"]:
+            #     for event in all_day_events:
+            #         if "SMIS:授業" in event["title"]:
+            #             await push_manager.add_message_to_pool(
+            #                 "night_9pm",
+            #                 deviceToken,
+            #                 "明日の授業のお知らせ",
+            #                 event["title"],
+            #             )
+            #             await push_manager.add_message_to_pool(
+            #                 "morning_7am",
+            #                 deviceToken,
+            #                 "本日の授業のお知らせ",
+            #                 event["title"],
+            #             )
+            #             continue
             if not data["time_table"]:
                 logging.info(f"用户 {username} 没有课程数据")
                 return
 
             for t in data["time_table"]:
-                if "previous_room" not in t:
-                    continue
-                t["room"] = t["room"].replace("教室", "")
-                push_data = {
-                    "updateType": "roomChange",
-                    "name": t["name"],
-                    "room": f"({t['room']})",
-                }
-                await push_manager.add_background_message_to_pool(
-                    "realtime", deviceToken, push_data
-                )
                 if t["lesson_num"] == 1:
                     pool_name = "morning_8_50am"
                 elif t["lesson_num"] == 2:
@@ -201,12 +201,42 @@ async def check_tmrw_course_user_push(
                     pool_name = "evening_7_30pm"
                 else:
                     pool_name = "realtime"
+                if "special_tags" in t:
+                    if "休講" in t["special_tags"]:
+                        await push_manager.add_message_to_pool(
+                            "realtime",
+                            deviceToken,
+                            "明日の授業の休講お知らせ",
+                            f"明日の「{t['name']}」授業は休講となります。",
+                            data={"toPage": "timetable"},
+                        )
+                        await push_manager.add_message_to_pool(
+                            pool_name,
+                            deviceToken,
+                            "【注意】次の授業の休講お知らせ",
+                            f"次の「{t['name']}」授業は休講となります。",
+                            interruption_level="time-sensitive",
+                            data={"toPage": "timetable"},
+                        )
+                        continue
+                elif "previous_room" not in t:
+                    continue
+                t["room"] = t["room"].replace("教室", "")
+                push_data = {
+                    "updateType": "roomChange",
+                    "name": t["name"],
+                    "room": f"({t['room']})",
+                }
+                await push_manager.add_background_message_to_pool(
+                    "realtime", deviceToken, push_data
+                )
                 await push_manager.add_message_to_pool(
                     pool_name,
                     deviceToken,
                     "【注意】次の授業の教室変更あり",
                     f"「{t['name']}」の教室が{t['room']}に変更されました。",
-                    {"toPage": "timetable"},
+                    interruption_level="time-sensitive",
+                    data={"toPage": "timetable"},
                 )
             logging.info(f"用户 {username} 的推送教室变更消息已添加到推送池")
         except Exception as e:
@@ -223,10 +253,8 @@ async def send_9pm_push_pool(push_manager):
     logging.info("开始处理9点推送池任务")
 
     # 读取数据库
-    async with aiosqlite.connect("users.db") as db:
-        cursor = await db.execute("SELECT * FROM users")
-        users = await cursor.fetchall()
-
+    try:
+        users = await db_manager.get_all_users()
         # 创建任务列表
         tasks = []
         for user in users:
@@ -246,6 +274,8 @@ async def send_9pm_push_pool(push_manager):
             logging.info("所有用户的推送任务处理完成")
         else:
             logging.info("没有用户需要处理推送任务")
+    except Exception as e:
+        logging.error(f"处理9点推送池任务时出错: {e}")
 
 
 async def monitor_task_push(push_manager):
@@ -253,10 +283,8 @@ async def monitor_task_push(push_manager):
     logging.info("处理监测任务")
 
     # 读取数据库
-    async with aiosqlite.connect("users.db") as db:
-        cursor = await db.execute("SELECT * FROM users")
-        users = await cursor.fetchall()
-
+    try:
+        users = await db_manager.get_all_users()
         # 创建任务列表
         tasks = []
         for user in users:
@@ -274,3 +302,5 @@ async def monitor_task_push(push_manager):
             logging.info("所有用户的监测任务处理完成")
         else:
             logging.info("没有用户需要处理监测任务")
+    except Exception as e:
+        logging.error(f"处理监测任务时出错: {e}")

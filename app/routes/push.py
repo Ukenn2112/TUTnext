@@ -1,27 +1,8 @@
 # app/routes/push.py
 from fastapi import APIRouter, Response, status
-import aiosqlite
-import os
+from app.database import db_manager
 
 router = APIRouter()
-
-# 数据库文件路径
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "users.db")
-
-# 确保数据目录存在
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-
-async def init_db():
-    """初始化数据库，创建表结构"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            encryptedPassword TEXT NOT NULL,
-            deviceToken TEXT NOT NULL
-        )
-        ''')
-        await db.commit()
 
 @router.post("/send")
 async def send_push(data: dict, response: Response):
@@ -34,31 +15,18 @@ async def send_push(data: dict, response: Response):
         response.status_code = status.HTTP_400_BAD_REQUEST
         return {"status": False, "message": "Missing required parameters, please provide username, encryptedPassword and deviceToken"}
     
-    # 确保数据库已初始化
-    await init_db()
-    
-    async with aiosqlite.connect(DB_PATH) as db:
-        # 检查用户是否已存在
-        cursor = await db.execute("SELECT * FROM users WHERE username = ?", (username,))
-        existing_user = await cursor.fetchone()
-        
-        if existing_user:
-            # 更新用户信息
-            await db.execute(
-                "UPDATE users SET encryptedPassword = ?, deviceToken = ? WHERE username = ?",
-                (encryptedPassword, deviceToken, username)
-            )
+    # 使用数据库管理器处理用户数据
+    try:
+        success = await db_manager.upsert_user(username, encryptedPassword, deviceToken)
+        if success:
+            response.status_code = status.HTTP_200_OK
+            return {"status": True, "message": "Data stored and pushed successfully"}
         else:
-            # 添加新用户
-            await db.execute(
-                "INSERT INTO users (username, encryptedPassword, deviceToken) VALUES (?, ?, ?)",
-                (username, encryptedPassword, deviceToken)
-            )
-        
-        await db.commit()
-    
-    response.status_code = status.HTTP_200_OK
-    return {"status": True, "message": "Data stored and pushed successfully"}
+            response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            return {"status": False, "message": "Failed to store user data"}
+    except Exception as e:
+        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        return {"status": False, "message": f"Database error: {str(e)}"}
 
 @router.post("/unregister")
 async def unregister_push(data: dict, response: Response):
@@ -68,13 +36,15 @@ async def unregister_push(data: dict, response: Response):
         response.status_code = status.HTTP_400_BAD_REQUEST
         return {"status": False, "message": "Missing required parameter deviceToken"}
     
-    # 确保数据库已初始化
-    await init_db()
-    
-    async with aiosqlite.connect(DB_PATH) as db:
-        # 删除对应deviceToken的记录
-        await db.execute("DELETE FROM users WHERE deviceToken = ?", (deviceToken,))
-        await db.commit()
-    
-    response.status_code = status.HTTP_200_OK
-    return {"status": True, "message": "Device unregistered successfully"}
+    # 使用数据库管理器删除用户
+    try:
+        success = await db_manager.delete_user_by_device_token(deviceToken)
+        if success:
+            response.status_code = status.HTTP_200_OK
+            return {"status": True, "message": "Device unregistered successfully"}
+        else:
+            response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            return {"status": False, "message": "Failed to unregister device"}
+    except Exception as e:
+        response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        return {"status": False, "message": f"Database error: {str(e)}"}

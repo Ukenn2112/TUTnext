@@ -4,7 +4,7 @@ import logging
 import aioredis
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format="[%(levelname)s]%(asctime)s [%(funcName)s:%(lineno)d] -> %(message)s",
     handlers=[
         logging.FileHandler("./next.log", encoding="UTF-8"),
