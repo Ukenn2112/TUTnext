@@ -88,7 +88,8 @@ async def get_kadai(data: dict, response: Response):
                 username, "", "https://next.tama.ac.jp", encryptedPassword
             )
             kadai_list = await gakuen.get_user_kadai()
-            await redis.set(f"{username}:kadai", json.dumps(kadai_list), ex=60) # 缓存用户课题
+            if kadai_list:
+                await redis.set(f"{username}:kadai", json.dumps(kadai_list), ex=60) # 缓存用户课题
         response.status_code = status.HTTP_200_OK
         return {"status": True, "data": kadai_list}
     except GakuenAPIError as e:

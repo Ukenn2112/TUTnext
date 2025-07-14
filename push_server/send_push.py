@@ -95,12 +95,12 @@ async def monitor_task(
                         "詳しくはこのメッセージをタップしてください",
                         data={"toPage": "assignment"},
                     )
-            await redis.set(
-                f"{username}:kadai", json.dumps(kadai_list), ex=180
-            )  # 缓存用户课题
             if not kadai_list:
                 logging.info(f"用户 {username} 没有课题")
                 return
+            await redis.set(
+                f"{username}:kadai", json.dumps(kadai_list), ex=180
+            )  # 缓存用户课题
             now_time = datetime.now(JAPAN_TZ)
             for kadai in kadai_list:
                 naive_due_time = datetime.strptime(
@@ -145,7 +145,7 @@ async def check_tmrw_course_user_push(
         # 为每个用户创建新的GakuenAPI实例
         gakuen = GakuenAPI("", "", "https://next.tama.ac.jp")
         try:
-            max_retries = 3
+            max_retries = 5
             retry_count = 0
             while retry_count < max_retries:
                 try:

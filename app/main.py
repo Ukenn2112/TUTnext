@@ -45,7 +45,7 @@ async def policy_page():
 async def login_check(data: UserData):
     gakuen = GakuenAPI(data.username, data.password, "https://next.tama.ac.jp")
     try:
-        await gakuen.webapi_login()
+        await gakuen.api_login()
         return {"status": "success"}
     except GakuenAPIError as e:
         return {"status": "error", "message": str(e)}

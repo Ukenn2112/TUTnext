@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 @router.get("")
-async def send_schedule(username: str = None, password: str = None):
+async def send_schedule(username=None, password=None):
     if not username or not password:
         raise HTTPException(
             status_code=400, detail="学籍番号またはパスワードを入力してください"
@@ -20,7 +20,7 @@ async def send_schedule(username: str = None, password: str = None):
     gakuen = GakuenAPI(username, password, "https://next.tama.ac.jp")
     logging.info(f"login: 学籍番号: {username}")
     try:
-        # web_login_data = await gakuen.webapi_login()  # webapi login
+        # web_login_data = await gakuen.api_login()  # webapi login
         await gakuen.login()
         # if web_login_data["userShkbtKbn"] == "Student":
         #     # webapi data start
@@ -53,7 +53,8 @@ async def send_schedule(username: str = None, password: str = None):
             course_list = await gakuen.month_data(now_year, month)
             for course in course_list:
                 event = Event()
-                if not course["title"]: continue
+                if not course["title"]:
+                    continue
                 event.add("summary", course["title"])
                 event.add("dtstart", course["start"])
                 event.add("dtend", course["end"])
