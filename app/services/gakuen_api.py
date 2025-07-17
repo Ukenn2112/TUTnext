@@ -345,24 +345,27 @@ class GakuenAPI:
                 )
             kaitai_list = []
             for item in soup.find_all("li", class_="ui-datalist-item"):
-                if task := item.find(class_="signPortal signPortalKadai"):
+                if isinstance(item, Tag) and (
+                    task := item.find(class_="signPortal signPortalKadai")
+                ):
                     deadline = datetime.strptime(
                         item.find_all(class_="textDate")[-1].text + "/23:59",
                         "%Y/%m/%d/%H:%M",
                     )
-                    kaitai_list.append(
-                        {
-                            "task": task.text,
-                            "date": item.find(class_="textDate").text,
-                            "title": item.find(class_="textTitle").text.replace(
-                                "\u3000", " "
-                            ),
-                            "from": item.find_all(class_="textFrom")[1].text.replace(
-                                "\u3000", " "
-                            ),
-                            "deadline": deadline,
-                        }
-                    )
+                    if isinstance(
+                        _date := item.find(class_="textDate"), Tag
+                    ) and isinstance(_title := item.find(class_="textTitle"), Tag):
+                        kaitai_list.append(
+                            {
+                                "task": task.text,
+                                "date": _date.text,
+                                "title": _title.text.replace("\u3000", " "),
+                                "from": item.find_all(class_="textFrom")[
+                                    1
+                                ].text.replace("\u3000", " "),
+                                "deadline": deadline,
+                            }
+                        )
             return kaitai_list
         except Exception as e:
             if isinstance(e, GakuenAPIError):
@@ -561,9 +564,21 @@ class GakuenAPI:
 
         Returns:
             dict: ユーザースケジュールの辞書。以下のキーを含む:
-                - "date_info": 日付情報（辞書形式）
+                - "date_info": 日付情報
+                    - "date": 日付（例: "2025/07/15"）
+                    - "day_of_week": 曜日（例: "火"）
                 - "all_day_events": 終日イベントのリスト
+                    - "title": イベントタイトル
+                    - "id": イベントID
+                    - "is_important": 重要なイベントかどうか（bool）
                 - "time_table": 時間割のリスト
+                    - "time": 授業時間（例: "09:00 - 10:40"）
+                    - "special_tags": 特別なタグのリスト（存在する場合）
+                    - "lesson_num": 授業限数（1-7）
+                    - "name": 授業名
+                    - "teachers": 教員名（リスト）
+                    - "room": 教室名
+                    - "previous_room": 変更前の教室名（存在する場合）
         """
         out_data = {
             "date_info": {},
@@ -626,14 +641,15 @@ class GakuenAPI:
                 if isinstance(all_day_panel, Tag):
                     all_day_events = all_day_panel.find_all("a", recursive=True)
                     for event in all_day_events:
-                        out_data["all_day_events"].append(
-                            {
-                                "title": event.text.strip().replace("\u3000", " "),
-                                "id": event.get("id", ""),
-                                "is_important": "重要" in event.text
-                                or "【重要】" in event.text,
-                            }
-                        )
+                        if isinstance(event, Tag):
+                            out_data["all_day_events"].append(
+                                {
+                                    "title": event.text.strip().replace("\u3000", " "),
+                                    "id": event.get("id", ""),
+                                    "is_important": "重要" in event.text
+                                    or "【重要】" in event.text,
+                                }
+                            )
 
                 # 3. 课程信息 (时间表)
                 time_panel = content_soup.select_one("div[id*='j_idt177']")
@@ -692,28 +708,31 @@ class GakuenAPI:
                             class_data["teachers"] = teachers
 
                         # 教室
-                        class_details = item.find("div", class_="jknbtDtl")
-                        if isinstance(class_details, Tag):
+                        if isinstance(
+                            class_details := item.find("div", class_="jknbtDtl"), Tag
+                        ):
                             # 获取常规教室信息（当前教室）
                             room_divs = class_details.find_all("div", recursive=False)
                             for div in room_divs:
                                 if (
-                                    not div.get("id")
+                                    isinstance(div, Tag)
+                                    and not div.get("id")
                                     and not div.get("class")
                                     and "教室" in div.text
                                 ):
                                     class_data["room"] = div.text.strip()
 
                             # 获取变更前教室
-                            change_room_div = class_details.find(
-                                "div", {"id": lambda x: x and "j_idt248" in x}
-                            )
-                            if change_room_div:
-                                previous_room = change_room_div.find("div")
-                                if isinstance(previous_room, Tag):
-                                    class_data["previous_room"] = (
-                                        previous_room.text.strip()
-                                    )
+                            if isinstance(
+                                change_room_div := class_details.find(
+                                    "div",
+                                    {"id": lambda x: x is not None and "j_idt248" in x},
+                                ),
+                                Tag,
+                            ) and isinstance(
+                                previous_room := change_room_div.find("div"), Tag
+                            ):
+                                class_data["previous_room"] = previous_room.text.strip()
 
                         if class_data:
                             out_data["time_table"].append(class_data)
@@ -732,6 +751,35 @@ class GakuenAPI:
         user_id: Optional[str] = None,
         encrypted_login_password: Optional[str] = None,
     ) -> list[dict]:
+        """ユーザーの課題データを取得 (Mobile loginが必要) Student Only
+
+        Args:
+            user_id: ユーザーID（学籍番号）。省略時はインスタンスのuser_idを使用します。
+            encrypted_login_password: 暗号化されたログインパスワード。省略時はインスタンスの encrypted_login_password を使用します。
+
+        Raises:
+            GakuenAPIError: ユーザーの課題データの取得に失敗した場合
+
+        Returns:
+            list[dict]: 課題データのリスト
+            各課題は辞書形式で、以下のキーを含む:
+                - "id": 課題ID
+                - "courseSemesterName": コースの学期名
+                - "courseName": コース名
+                - "courseId": コースID
+                - "group": グループ名（存在する場合）
+                - "title": 課題タイトル
+                - "publishStart": 課題の公開開始日時（`2025/07/15(火) 10:40`形式の文字列）
+                - "publishEnd": 課題の公開終了日時（`2025/07/31(木) 23:59`形式の文字列）
+                - "submitStart": 課題の提出開始日時（`2025/07/15(火) 10:40`形式の文字列）
+                - "submitEnd": 課題の提出終了日時（`2025/07/31(木) 23:59`形式の文字列）
+                - "dueDate": 課題の締切日時（`YYYY-MM-DD`形式の文字列）
+                - "dueTime": 課題の締切時間（`HH:MM`形式の文字列）
+                - "description": 課題の説明（存在する場合）
+                - "proposedMethod": 課題の提出方法（存在する場合）
+                - "minLength": 課題の最小文字数（存在する場合）
+                - "maxLength": 課題の最大文字数（存在する場合）
+        """
         if user_id:
             self.user_id = user_id
         if encrypted_login_password:
@@ -765,8 +813,9 @@ class GakuenAPI:
                     "ユーザーの課題データの取得に失敗しました",
                     error_code="USER_KADAI_FETCH_ERROR",
                 )
-            item: Tag
             for item in main_content.find_all("li"):
+                if not isinstance(item, Tag):
+                    continue
                 link = item.find("a")
                 if not isinstance(link, Tag):
                     continue
@@ -793,6 +842,7 @@ class GakuenAPI:
                 await self._extract_session_tokens(soup)
                 # 授業インフォ
                 kadai_data = {}
+                kadai_data["id"] = kaidai_id
                 if isinstance(class_info := soup.find("div", class_="jugyoInfo"), Tag):
                     lesson_title_detail = class_info.find_all(
                         "span", class_="nendoGakkiDisp"
@@ -862,8 +912,8 @@ class GakuenAPI:
                     ):
                         spans = kadai_public_period_li.find_all("span")
                         if len(spans) >= 3:
-                            kadai_data["publish_start"] = spans[0].text.strip()
-                            kadai_data["publish_end"] = spans[2].text.strip()
+                            kadai_data["publishStart"] = spans[0].text.strip()
+                            kadai_data["publishEnd"] = spans[2].text.strip()
                     if (
                         isinstance(
                             kadai_submit_period := kadai_info.find(
@@ -886,8 +936,8 @@ class GakuenAPI:
                     ):
                         spans = kadai_submit_period_li.find_all("span")
                         if len(spans) >= 3:
-                            kadai_data["submit_start"] = spans[0].text.strip()
-                            kadai_data["submit_end"] = spans[2].text.strip()
+                            kadai_data["submitStart"] = spans[0].text.strip()
+                            kadai_data["submitEnd"] = spans[2].text.strip()
                             if due_date := re.search(
                                 r"(\d{4}/\d{2}/\d{2})", spans[2].text
                             ):
@@ -897,8 +947,8 @@ class GakuenAPI:
                             if due_time := re.search(r"(\d{2}:\d{2})", spans[2].text):
                                 kadai_data["dueTime"] = due_time.group(1)
                         elif len(spans) == 2:
-                            kadai_data["submit_start"] = spans[0].text.strip()
-                            kadai_data["submit_end"] = spans[1].text.strip()
+                            kadai_data["submitStart"] = spans[0].text.strip()
+                            kadai_data["submitEnd"] = spans[1].text.strip()
                             if due_date := re.search(
                                 r"(\d{4}/\d{2}/\d{2})", spans[1].text
                             ):
@@ -927,7 +977,9 @@ class GakuenAPI:
                             Tag,
                         )
                     ):
-                        kadai_data["description"] = kadai_content_li.text.strip()
+                        kadai_data["description"] = (
+                            kadai_content_li.text.strip().replace("\u3000", "")
+                        )
                     if isinstance(
                         kadai_proposed_method := kadai_info.find(
                             "li",
@@ -940,14 +992,14 @@ class GakuenAPI:
                         ),
                         Tag,
                     ):
-                        kadai_data["proposed_method"] = (
+                        kadai_data["proposedMethod"] = (
                             kadai_proposed_method_li.text.strip()
                         )
                         if min_length := kadai_proposed_method_li.find_all(
                             "span", class_="smallInput"
                         ):
-                            kadai_data["min_length"] = min_length[0].text.strip()
-                            kadai_data["max_length"] = min_length[1].text.strip()
+                            kadai_data["minLength"] = min_length[0].text.strip()
+                            kadai_data["maxLength"] = min_length[1].text.strip()
                     kadai_data["url"] = (
                         f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml?webApiLoginInfo=%7B%22password%22%3A%22%22%2C%22autoLoginAuthCd%22%3A%22%22%2C%22encryptedPassword%22%3A%22{self.encrypted_login_password}%22%2C%22userId%22%3A%22{self.user_id}%22%2C%22parameterMap%22%3A%22%22%7D"
                     )
@@ -1104,12 +1156,16 @@ class GakuenAPI:
             """クラスタグを抽出"""
             try:
                 return [
-                    ({tag_data.get("class")[1]: tag_data.text}, index)
+                    ({class_attr[1]: tag_data.text}, index)
                     for index, lesson_head in enumerate(
                         soup.find_all("div", class_="lessonHead")
                     )
+                    if isinstance(lesson_head, Tag)
                     for tag_data in lesson_head.find_all("span", class_="signLesson")
-                    if tag_data.get("class") and len(tag_data.get("class")) > 1
+                    if isinstance(tag_data, Tag)
+                    and (class_attr := tag_data.get("class"))
+                    and isinstance(class_attr, list)
+                    and len(class_attr) > 1
                 ]
             except (AttributeError, IndexError) as e:
                 raise GakuenDataError(
@@ -1278,12 +1334,13 @@ class GakuenAPI:
             "rx-loginType": "loginType",
         }
 
-        input_tag: BeautifulSoup
         for input_tag in soup.find_all("input"):
+            if not isinstance(input_tag, Tag):
+                continue
             name = input_tag.get("name")
             value = input_tag.get("value")
 
-            if name in token_mapping:
+            if isinstance(name, str) and name in token_mapping:
                 self.rx[token_mapping[name]] = value
             elif name == "javax.faces.ViewState":
                 if isinstance(value, str):
@@ -1308,7 +1365,8 @@ class GakuenAPI:
                 isinstance(portal_support, Tag)
                 and (a := portal_support.find_all("a"))
                 and len(a) > 1
-                and isinstance(href := a[-1].get("href"), str)
+                and isinstance(b := a[-1], Tag)
+                and isinstance(href := b.get("href"), str)
             ):
                 self.j_idt_kadai = href.lstrip("#funcForm:")
 

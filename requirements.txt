@@ -1,7 +1,8 @@
 fastapi
 uvicorn
 aiohttp
-aiosqlite
+asyncpg
+psycopg2-binary
 icalendar
 lxml
 beautifulsoup4
@@ -10,3 +11,4 @@ aioapns
 pytz
 PyJWT==2.6.0
 cryptography==37.0.4
+python-dotenv

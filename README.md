@@ -23,13 +23,39 @@ TUTnext Application Backend
 
 Python 3.9 以上が必要です。
 
-依存ライブラリのインストール
+### 1. 依存ライブラリのインストール
 
 ```bash
 pip install -r requirements.txt
 ```
 
-起動
+### 2. 環境設定
+
+プロジェクトルートに `.env` ファイルを作成し、必要な環境変数を設定してください。
+
+```bash
+cp .env.example .env
+```
+
+`.env` ファイルを編集して、以下の設定を行ってください：
+
+```env
+# 数据库配置
+DATABASE_URL=postgresql://username:password@host:port/database
+
+# Apple Push Notification Service (APNs) 配置
+APNS_KEY_FILE=AuthKey_XXXXXXXXXX.p8
+APNS_KEY_ID=XXXXXXXXXX
+APNS_TEAM_ID=XXXXXXXXXX
+APNS_TOPIC=com.yourapp.name
+APNS_USE_SANDBOX=true
+
+# 日志配置
+LOG_LEVEL=INFO
+LOG_FILE=./next.log
+```
+
+### 3. 起動
 
 ```bash
 python run.py

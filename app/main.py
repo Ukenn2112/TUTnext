@@ -1,11 +1,13 @@
 # app/main.py
 import os
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from app.routes import schedule, bus, kadai, push, tmail
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
+from app.database import db_manager
 
 
 class UserData(BaseModel):
@@ -13,7 +15,16 @@ class UserData(BaseModel):
     password: str
 
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动时初始化数据库
+    await db_manager.init_db()
+    yield
+    # 关闭时关闭数据库连接池
+    await db_manager.close()
+
+
+app = FastAPI(lifespan=lifespan)
 
 # Include other routes
 app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
