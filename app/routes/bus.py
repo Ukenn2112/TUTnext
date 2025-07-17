@@ -2,7 +2,8 @@
 from requests import get
 from bs4 import BeautifulSoup, Tag
 from fastapi import APIRouter
-from datetime import datetime
+from datetime import datetime, timedelta
+import re
 
 router = APIRouter()
 
@@ -790,25 +791,93 @@ async def app_schedule():
             route_data.sort(key=lambda x: x["hour"])
             for hour_data in route_data:
                 hour_data["times"].sort(key=lambda x: (x["hour"], x["minute"]))
+
+    # 从学校主页上获取临时巴士数据
     web_data = get("https://www.tama.ac.jp/guide/campus/schoolbus.html")
     soup = BeautifulSoup(web_data.text, "html.parser")
     _messages = []
+    pin_messages = None
+    # 获取祝日信息
     holidays_data = get("https://holidays-jp.github.io/api/v1/date.json").json()
-    now_day_str = datetime.now().strftime("%Y-%m-%d")
-    if now_day_str in holidays_data:
+    now_day = datetime.now()
+    if now_day.strftime("%Y-%m-%d") in holidays_data:
         _messages.append(
             {
-                "title": f"本日 {now_day_str} 祝日授業日のスクールバス時刻表 ",
+                "title": f"本日 {now_day.strftime('%Y年%m月%d日')} 祝日授業日のスクールバス时刻表 ",
                 "url": "https://www.tama.ac.jp/guide/campus/img/bus_2025holidays.pdf",
             }
         )
+        pin_messages = {
+            "title": f"本日は祝日授業日のスクールバス時刻表らしいです",
+            "url": "https://www.tama.ac.jp/guide/campus/img/bus_2025holidays.pdf",
+        }
+    # 获取临时巴士信息
     if isinstance(_web_data := soup.find("div", class_="rinji"), Tag):
         for web_data in _web_data.find_all("a"):
+            title = web_data.text.strip()
+            date_range = []
+            # 检测格式：2025年7月14日(月)～17日(木) 或 2025年7月14日(月)～8月17日(木)
+            if match := re.match(
+                r"(\d{4})年(\d{1,2})月(\d{1,2})日\((.)\)～(?:(\d{1,2})月)?(\d{1,2})日\((.)\)",
+                title,
+            ):
+                year = int(match.group(1))
+                start_month = int(match.group(2))
+                start_day = int(match.group(3))
+                end_month = int(match.group(5)) if match.group(5) else start_month
+                end_day = int(match.group(6))
+                # 计算开始和结束日期
+                start_date = datetime(year, start_month, start_day)
+                end_date = datetime(year, end_month, end_day)
+                # 生成日期范围
+                date_range = [
+                    (start_date + timedelta(days=i)).strftime("%Y年%m月%d日")
+                    for i in range((end_date - start_date).days + 1)
+                ]
+            # 检测格式：2025年7月11日(金)、18日(金)、25日(金)...
+            elif match := re.match(
+                r"(\d{4})年(\d{1,2})月(\d{1,2})日\((.)\)((?:、(\d{1,2})日\((.)\))+)",
+                title,
+            ):
+                year = int(match.group(1))
+                month = int(match.group(2))
+                first_day = int(match.group(3))
+                additional_days_str = match.group(5)
+
+                # 解析第一个日期
+                date_range = [datetime(year, month, first_day).strftime("%Y年%m月%d日")]
+
+                # 解析后续的日期
+                additional_matches = re.findall(
+                    r"(\d{1,2})日\((.)\)", additional_days_str
+                )
+                for day_str, _ in additional_matches:
+                    day = int(day_str)
+                    date_range.append(
+                        datetime(year, month, day).strftime("%Y年%m月%d日")
+                    )
+            # 检测格式：2025年7月11日(金)
+            elif match := re.match(
+                r"(\d{4})年(\d{1,2})月(\d{1,2})日\((.)\)",
+                title,
+            ):
+                year = int(match.group(1))
+                month = int(match.group(2))
+                day = int(match.group(3))
+                # 计算日期
+                date_range = [datetime(year, month, day).strftime("%Y年%m月%d日")]
+            if now_day.strftime("%Y年%m月%d日") in date_range:
+                # 如果今天在日期范围内，添加消息
+                pin_messages = {
+                    "title": f"本日はスクールバス臨時ダイヤらしいです",
+                    "url": "https://www.tama.ac.jp/guide/campus/"
+                    + web_data.get("href"),
+                }
             _messages.append(
                 {
-                    "title": web_data.text,
+                    "title": title,
                     "url": "https://www.tama.ac.jp/guide/campus/"
                     + web_data.get("href"),
                 }
             )
-    return {"messages": _messages, "data": app_data}
+    return {"messages": _messages, "data": app_data, "pin": pin_messages}
