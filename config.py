@@ -33,8 +33,23 @@ if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required")
 
 # Apple Push Notification Service (APNs) 配置
+APNS_KEY_FILE_PATH = os.getenv("APNS_KEY_FILE")
+APNS_KEY_CONTENT = None
+
+# 读取 APNs 私钥文件内容
+if APNS_KEY_FILE_PATH:
+    try:
+        with open(APNS_KEY_FILE_PATH, 'r') as f:
+            APNS_KEY_CONTENT = f.read()
+    except FileNotFoundError:
+        logging.error(f"APNs 私钥文件未找到: {APNS_KEY_FILE_PATH}")
+        APNS_KEY_CONTENT = None
+    except Exception as e:
+        logging.error(f"读取 APNs 私钥文件时出错: {e}")
+        APNS_KEY_CONTENT = None
+
 APNS_CONFIG = {
-    "key": os.getenv("APNS_KEY_FILE"),
+    "key": APNS_KEY_CONTENT,
     "key_id": os.getenv("APNS_KEY_ID"),
     "team_id": os.getenv("APNS_TEAM_ID"),
     "topic": os.getenv("APNS_TOPIC"),
@@ -42,5 +57,5 @@ APNS_CONFIG = {
 }
 
 # 验证必需的 APNS 配置
-if not all([APNS_CONFIG["key_id"], APNS_CONFIG["team_id"], APNS_CONFIG["topic"]]):
-    raise ValueError("APNS configuration is incomplete. Please check your .env file.")
+if not all([APNS_CONFIG["key"], APNS_CONFIG["key_id"], APNS_CONFIG["team_id"], APNS_CONFIG["topic"]]):
+    raise ValueError("APNS configuration is incomplete. Please check your .env file and ensure the key file exists.")
