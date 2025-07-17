@@ -6,7 +6,7 @@ psycopg2-binary
 icalendar
 lxml
 beautifulsoup4
-aioredis
+redis>=4.2.0
 aioapns
 pytz
 PyJWT==2.6.0

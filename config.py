@@ -1,7 +1,7 @@
 # config.py
 import pytz
 import logging
-import aioredis
+from redis import asyncio as aioredis
 import os
 from dotenv import load_dotenv
 

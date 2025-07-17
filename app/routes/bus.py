@@ -1,6 +1,6 @@
 # app/routes/bus.py
 from requests import get
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from fastapi import APIRouter
 from datetime import datetime
 
@@ -735,7 +735,7 @@ async def app_schedule():
                 "url": "https://www.tama.ac.jp/guide/campus/img/bus_2025holidays.pdf",
             }
         )
-    if _web_data := soup.find("div", class_="rinji"):
+    if isinstance(_web_data := soup.find("div", class_="rinji"), Tag):
         for web_data in _web_data.find_all("a"):
             _messages.append(
                 {

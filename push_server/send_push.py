@@ -288,10 +288,9 @@ async def monitor_task_push(push_manager):
         # 创建任务列表
         tasks = []
         for user in users:
-            username, encryptedPassword, deviceToken = user
             # 为每个用户创建独立的任务
             task = asyncio.create_task(
-                monitor_task(push_manager, username, encryptedPassword, deviceToken)
+                monitor_task(push_manager, user["username"], user["encryptedpassword"], user["devicetoken"])
             )
             tasks.append(task)
 
