@@ -246,6 +246,12 @@ app_data = {
                     {"hour": 18, "minute": 40, "isSpecial": False, "specialNote": None},
                 ],
             },
+            {
+                "hour": 19,
+                "times": [
+                    {"hour": 19, "minute": 40, "isSpecial": True, "specialNote": "M"},
+                ],
+            },
         ],
     },
     "wednesday": {
@@ -502,6 +508,12 @@ app_data = {
                     {"hour": 18, "minute": 0, "isSpecial": False, "specialNote": None},
                 ],
             },
+            {
+                "hour": 19,
+                "times": [
+                    {"hour": 19, "minute": 40, "isSpecial": True, "specialNote": "M"},
+                ],
+            },
         ],
     },
     "saturday": {
@@ -723,6 +735,61 @@ app_data = {
 
 @router.get("/app_data")
 async def app_schedule():
+    # app_data 进行修正处理
+    route_mapping = {
+        "fromSeisekiToSchool": "fromNagayamaToSchool",
+        "fromSchoolToSeiseki": "fromSchoolToNagayama",
+    }
+
+    # 处理特殊标记"*"的时间，将其复制到对应的Nagayama路线
+    for day in ["weekday", "wednesday", "saturday"]:
+        for source_route, target_route in route_mapping.items():
+            if source_route not in app_data[day]:
+                continue
+
+            # 为目标路线创建小时索引以提高查找效率
+            target_hours = {
+                hour_data["hour"]: hour_data
+                for hour_data in app_data[day][target_route]
+            }
+
+            for hour_data in app_data[day][source_route]:
+                # 筛选出带有"*"标记的时间
+                special_times = [
+                    time for time in hour_data["times"] if time["specialNote"] == "*"
+                ]
+
+                if special_times:
+                    hour = hour_data["hour"]
+                    # 如果目标路线中已存在该小时，直接添加时间
+                    if hour in target_hours:
+                        for time in special_times:
+                            # 检查时间是否已存在于目标路线中 如果存在将其时间的isSpecial标记设置为True
+                            if existing_time := next(
+                                (
+                                    t
+                                    for t in target_hours[hour]["times"]
+                                    if t["hour"] == time["hour"]
+                                    and t["minute"] == time["minute"]
+                                ),
+                                None,
+                            ):
+                                existing_time["isSpecial"] = True
+                                existing_time["specialNote"] = "*"
+                            else:
+                                target_hours[hour]["times"].append(time)
+                    else:
+                        # 创建新的小时条目并添加到目标路线
+                        new_hour_data = {"hour": hour, "times": special_times.copy()}
+                        app_data[day][target_route].append(new_hour_data)
+                        target_hours[hour] = new_hour_data
+
+    # 对所有路线的时间进行排序
+    for day_data in app_data.values():
+        for route_data in day_data.values():
+            route_data.sort(key=lambda x: x["hour"])
+            for hour_data in route_data:
+                hour_data["times"].sort(key=lambda x: (x["hour"], x["minute"]))
     web_data = get("https://www.tama.ac.jp/guide/campus/schoolbus.html")
     soup = BeautifulSoup(web_data.text, "html.parser")
     _messages = []
