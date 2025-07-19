@@ -22,7 +22,7 @@ async def receive_tokens(data: dict, response: Response):
         success = await db_manager.upsert_user_tokens(username, access_token, refresh_token)
         if success:
             # 清除 f"{username}:kadai" 的缓存
-            redis.delete(f"{username}:kadai")
+            await redis.delete(f"{username}:kadai")
             response.status_code = status.HTTP_200_OK
             return {"status": True, "message": "User tokens stored successfully"}
         else:
@@ -45,7 +45,7 @@ async def revoke_tokens(data: dict, response: Response):
         success = await classroom_api.revoke_user_authorization(username)
         if success["success"]:
             # 清除 f"{username}:kadai" 的缓存
-            redis.delete(f"{username}:kadai")
+            await redis.delete(f"{username}:kadai")
             response.status_code = status.HTTP_200_OK
             return {"status": True, "message": "User tokens revoked successfully"}
         else:

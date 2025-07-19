@@ -207,8 +207,8 @@ class GoogleClassroomAPI:
         
         # 获取时间信息，默认为23:59
         if due_time:
-            hours = due_time.get("hours", 23)
-            minutes = due_time.get("minutes", 59)
+            hours = due_time.get("hours", 0)
+            minutes = due_time.get("minutes", 0)
         else:
             hours = 23
             minutes = 59
