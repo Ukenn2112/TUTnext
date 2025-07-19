@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Response, status
 from app.database import db_manager
 from config import redis
+from app.services.google_classroom import classroom_api
 
 router = APIRouter()
 
@@ -41,8 +42,8 @@ async def revoke_tokens(data: dict, response: Response):
     
     # 使用数据库管理器撤销用户令牌
     try:
-        success = await db_manager.revoke_user_tokens(username)
-        if success:
+        success = await classroom_api.revoke_user_authorization(username)
+        if success["success"]:
             # 清除 f"{username}:kadai" 的缓存
             redis.delete(f"{username}:kadai")
             response.status_code = status.HTTP_200_OK

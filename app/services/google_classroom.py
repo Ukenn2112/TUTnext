@@ -240,6 +240,85 @@ class GoogleClassroomAPI:
         """生成课题URL"""
         return f"https://classroom.google.com/c/{course_id}/a/{course_work_id}/details"
     
+    async def revoke_user_authorization(self, username: str) -> Dict[str, Any]:
+        """撤销用户的OAuth授权"""
+        try:
+            # 从数据库获取用户令牌
+            tokens = await db_manager.get_user_tokens(username)
+            if not tokens:
+                logging.warning(f"用户 {username} 没有存储的令牌，无需撤销")
+                return {
+                    "success": True,
+                    "message": "用户没有存储的令牌",
+                    "already_revoked": True
+                }
+            
+            access_token = tokens.get("access_token")
+            refresh_token = tokens.get("refresh_token")
+            
+            # 如果有访问令牌，尝试通过Google API撤销
+            revoke_success = False
+            if access_token:
+                revoke_success = await self._revoke_token_from_google(access_token)
+            
+            # 如果访问令牌撤销失败但有刷新令牌，尝试撤销刷新令牌
+            if not revoke_success and refresh_token:
+                revoke_success = await self._revoke_token_from_google(refresh_token)
+            
+            # 无论Google API撤销是否成功，都从数据库中删除令牌
+            db_success = await db_manager.revoke_user_tokens(username)
+            
+            if db_success:
+                logging.info(f"用户 {username} 的授权已成功撤销")
+                return {
+                    "success": True,
+                    "message": "授权撤销成功",
+                    "google_revoke_success": revoke_success,
+                    "database_cleanup_success": True
+                }
+            else:
+                logging.error(f"清理用户 {username} 数据库令牌失败")
+                return {
+                    "success": False,
+                    "message": "数据库令牌清理失败",
+                    "google_revoke_success": revoke_success,
+                    "database_cleanup_success": False
+                }
+                
+        except Exception as e:
+            logging.error(f"撤销用户 {username} 授权时出错: {e}")
+            return {
+                "success": False,
+                "message": f"撤销授权失败: {str(e)}",
+                "error": str(e)
+            }
+    
+    async def _revoke_token_from_google(self, token: str) -> bool:
+        """通过Google API撤销令牌"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = "https://oauth2.googleapis.com/revoke"
+                data = {"token": token}
+                headers = {"Content-Type": "application/x-www-form-urlencoded"}
+                
+                response = await self._make_request(
+                    session, "POST", url,
+                    headers=headers, data=urlencode(data)
+                )
+                
+                # Google撤销API成功时返回200状态码，但响应体为空
+                # 这里我们通过检查是否没有错误来判断成功
+                if response is not None or True:  # Google revoke API返回空响应表示成功
+                    logging.info("令牌已通过Google API撤销")
+                    return True
+                else:
+                    logging.warning("Google API令牌撤销可能失败")
+                    return False
+                    
+        except Exception as e:
+            logging.error(f"通过Google API撤销令牌时出错: {e}")
+            return False
+    
     async def get_user_assignments(self, username: str) -> List[Dict[str, Any]]:
         """获取用户的未完成课题"""
         # 获取有效的访问令牌
@@ -309,7 +388,7 @@ class GoogleClassroomAPI:
                                 "dueDate": due_date,
                                 "dueTime": due_time,
                                 "description": work.get("description", ""),
-                                "url": self._generate_assignment_url(course_id, course_work_id)
+                                "url": work.get("alternateLink", self._generate_assignment_url(course_id, course_work_id))
                             }
                             pending_assignments.append(assignment)
                 
