@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
-from app.routes import schedule, bus, kadai, push, tmail
+from app.routes import oauth, schedule, bus, kadai, push, tmail
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 from app.database import db_manager
 
@@ -32,6 +32,7 @@ app.include_router(bus.router, prefix="/bus", tags=["Bus"])
 app.include_router(kadai.router, prefix="/kadai", tags=["Kadai"])
 app.include_router(push.router, prefix="/push", tags=["Push"])
 app.include_router(tmail.router, prefix="/tmail", tags=["Tmail"])
+app.include_router(oauth.router, prefix="/oauth", tags=["OAuth"])
 
 
 # Home page

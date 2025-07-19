@@ -6,6 +6,8 @@ from fastapi import APIRouter, Response, status
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 
 from config import redis
+from app.database import db_manager
+from app.services.google_classroom import classroom_api
 
 router = APIRouter()
 
@@ -88,6 +90,10 @@ async def get_kadai(data: dict, response: Response):
                 username, "", "https://next.tama.ac.jp", encryptedPassword
             )
             kadai_list = await gakuen.get_user_kadai()
+            if await db_manager.get_user_tokens(username):
+                # 如果数据库中存在令牌，则使用 Google Classroom API 获取课题
+                if classroom_data := await classroom_api.get_user_assignments(username):
+                    kadai_list.extend(classroom_data)
             if kadai_list:
                 await redis.set(f"{username}:kadai", json.dumps(kadai_list), ex=60) # 缓存用户课题
         response.status_code = status.HTTP_200_OK

@@ -1,0 +1,325 @@
+# app/services/google_classroom.py
+
+# 已获取用户权限有:
+# https://www.googleapis.com/auth/classroom.courses.readonly 
+# https://www.googleapis.com/auth/classroom.coursework.me.readonly 
+# https://www.googleapis.com/auth/classroom.student-submissions.me.readonly
+
+
+import os
+import logging
+import aiohttp
+import asyncio
+from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone, timedelta
+from urllib.parse import urlencode
+from app.database import db_manager
+
+
+class GoogleClassroomAPI:
+    """Google Classroom API 异步管理类"""
+    
+    def __init__(self):
+        self.client_id = os.getenv("CLIENT_ID")
+        if not self.client_id:
+            raise ValueError("CLIENT_ID environment variable is required")
+        
+        self.base_url = "https://classroom.googleapis.com/v1"
+        self.oauth_url = "https://oauth2.googleapis.com/token"
+        self.token_info_url = "https://oauth2.googleapis.com/tokeninfo"
+        
+    async def _make_request(
+        self, 
+        session: aiohttp.ClientSession, 
+        method: str, 
+        url: str, 
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> Optional[Dict[str, Any]]:
+        """发送HTTP请求的通用方法"""
+        try:
+            async with session.request(method, url, headers=headers, **kwargs) as response:
+                if response.status == 200:
+                    return await response.json()
+                else:
+                    logging.error(f"Request failed: {response.status} - {await response.text()}")
+                    return None
+        except Exception as e:
+            logging.error(f"Request error: {e}")
+            return None
+    
+    async def _check_token_validity(self, access_token: str) -> bool:
+        """检查访问令牌是否有效"""
+        async with aiohttp.ClientSession() as session:
+            url = f"{self.token_info_url}?access_token={access_token}"
+            response = await self._make_request(session, "GET", url)
+            
+            if response and "error" not in response:
+                # 检查令牌是否还有足够的有效时间（至少5分钟）
+                expires_in = response.get("expires_in", 0)
+                return int(expires_in) > 300  # 5分钟
+            return False
+    
+    async def _refresh_access_token(self, username: str, refresh_token: str) -> Optional[str]:
+        """刷新访问令牌"""
+        async with aiohttp.ClientSession() as session:
+            data = {
+                "client_id": self.client_id,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token"
+            }
+            
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            response = await self._make_request(
+                session, "POST", self.oauth_url, 
+                headers=headers, data=urlencode(data)
+            )
+            
+            if response and "access_token" in response:
+                new_access_token = response["access_token"]
+                # 更新数据库中的令牌
+                success = await db_manager.upsert_user_tokens(
+                    username, new_access_token, refresh_token
+                )
+                if success:
+                    logging.info(f"用户 {username} 的访问令牌已刷新")
+                    return new_access_token
+                else:
+                    await db_manager.revoke_user_tokens(username)
+                    logging.error(f"更新用户 {username} 令牌失败")
+            else:
+                await db_manager.revoke_user_tokens(username)
+                logging.error(f"刷新用户 {username} 访问令牌失败")
+            
+            return None
+    
+    async def _get_valid_access_token(self, username: str) -> Optional[str]:
+        """获取有效的访问令牌，如果无效则尝试刷新"""
+        # 从数据库获取用户令牌
+        tokens = await db_manager.get_user_tokens(username)
+        if not tokens:
+            logging.warning(f"用户 {username} 没有存储的令牌")
+            return None
+        
+        access_token = tokens.get("access_token")
+        refresh_token = tokens.get("refresh_token")
+        
+        if not access_token or not refresh_token:
+            await db_manager.revoke_user_tokens(username)
+            logging.warning(f"用户 {username} 令牌不完整")
+            return None
+        
+        # 检查访问令牌是否有效
+        if await self._check_token_validity(access_token):
+            return access_token
+        
+        # 令牌无效，尝试刷新
+        logging.info(f"用户 {username} 的访问令牌已过期，正在刷新...")
+        return await self._refresh_access_token(username, refresh_token)
+    
+    async def _get_active_courses(self, session: aiohttp.ClientSession, access_token: str) -> List[Dict[str, Any]]:
+        """获取用户所有活跃课程"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        url = f"{self.base_url}/courses?courseStates=ACTIVE"
+        
+        response = await self._make_request(session, "GET", url, headers=headers)
+        if response and "courses" in response:
+            return response["courses"]
+        return []
+    
+    async def _get_course_work_batch(
+        self, 
+        session: aiohttp.ClientSession, 
+        access_token: str, 
+        course_ids: List[str]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """批处理获取多个课程的课题"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        course_work_map = {}
+        
+        # 使用异步并发请求
+        async def fetch_course_work(course_id: str):
+            url = f"{self.base_url}/courses/{course_id}/courseWork"
+            response = await self._make_request(session, "GET", url, headers=headers)
+            if response and "courseWork" in response:
+                course_work_map[course_id] = response["courseWork"]
+            else:
+                course_work_map[course_id] = []
+        
+        # 并发执行所有请求
+        tasks = [fetch_course_work(course_id) for course_id in course_ids]
+        await asyncio.gather(*tasks)
+        
+        return course_work_map
+    
+    async def _get_student_submissions_batch(
+        self,
+        session: aiohttp.ClientSession,
+        access_token: str,
+        course_work_items: List[Dict[str, Any]]
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """批处理获取课题的学生提交状态"""
+        headers = {"Authorization": f"Bearer {access_token}"}
+        submissions_map = {}
+        
+        async def fetch_submissions(course_work: Dict[str, Any]):
+            course_id = course_work["courseId"]
+            course_work_id = course_work["id"]
+            key = f"{course_id}_{course_work_id}"
+            
+            url = f"{self.base_url}/courses/{course_id}/courseWork/{course_work_id}/studentSubmissions"
+            params = {"states": ["NEW", "CREATED"]}
+            
+            # 构建查询参数
+            query_params = []
+            for state in params["states"]:
+                query_params.append(f"states={state}")
+            query_string = "&".join(query_params)
+            full_url = f"{url}?{query_string}"
+            
+            response = await self._make_request(session, "GET", full_url, headers=headers)
+            if response and "studentSubmissions" in response:
+                submissions_map[key] = response["studentSubmissions"]
+            else:
+                submissions_map[key] = []
+        
+        # 并发执行所有请求
+        tasks = [fetch_submissions(item) for item in course_work_items]
+        await asyncio.gather(*tasks)
+        
+        return submissions_map
+    
+    def _format_due_datetime(self, due_date: Dict[str, int], due_time: Optional[Dict[str, int]] = None) -> tuple:
+        """格式化截止日期和时间，将UTC时间转换为UTC+9（日本时间）"""
+        if not due_date:
+            return None, None, None
+        
+        year = due_date.get("year")
+        month = due_date.get("month")  
+        day = due_date.get("day")
+        
+        if not all([year, month, day]):
+            return None, None, None
+        
+        # 确保类型安全
+        if not isinstance(year, int) or not isinstance(month, int) or not isinstance(day, int):
+            return None, None, None
+        
+        # 获取时间信息，默认为23:59
+        if due_time:
+            hours = due_time.get("hours", 23)
+            minutes = due_time.get("minutes", 59)
+        else:
+            hours = 23
+            minutes = 59
+        
+        # 确保hours和minutes是整数
+        if not isinstance(hours, int) or not isinstance(minutes, int):
+            hours = 23
+            minutes = 59
+        
+        try:
+            # 创建UTC时间的datetime对象
+            utc_dt = datetime(year, month, day, hours, minutes, tzinfo=timezone.utc)
+            
+            # 转换为UTC+9（日本时间）
+            jst_offset = timedelta(hours=9)
+            jst_dt = utc_dt + jst_offset
+            
+            # 格式化输出
+            date_str = f"{jst_dt.year:04d}-{jst_dt.month:02d}-{jst_dt.day:02d}"
+            time_str = f"{jst_dt.hour:02d}:{jst_dt.minute:02d}"
+            
+            return date_str, time_str, utc_dt
+            
+        except ValueError as e:
+            logging.error(f"日期时间格式化错误: {e}")
+            return None, None, None
+    
+    def _generate_assignment_url(self, course_id: str, course_work_id: str) -> str:
+        """生成课题URL"""
+        return f"https://classroom.google.com/c/{course_id}/a/{course_work_id}/details"
+    
+    async def get_user_assignments(self, username: str) -> List[Dict[str, Any]]:
+        """获取用户的未完成课题"""
+        # 获取有效的访问令牌
+        access_token = await self._get_valid_access_token(username)
+        if not access_token:
+            logging.error(f"无法获取用户 {username} 的有效访问令牌")
+            return []
+        
+        async with aiohttp.ClientSession() as session:
+            try:
+                # 1. 获取所有活跃课程
+                courses = await self._get_active_courses(session, access_token)
+                if not courses:
+                    logging.info(f"用户 {username} 没有活跃课程")
+                    return []
+                
+                logging.info(f"用户 {username} 有 {len(courses)} 个活跃课程")
+                
+                # 创建课程ID到课程名称的映射
+                course_name_map = {course["id"]: course["name"] for course in courses}
+                course_ids = list(course_name_map.keys())
+                
+                # 2. 批处理获取所有课程的课题
+                course_work_map = await self._get_course_work_batch(session, access_token, course_ids)
+                
+                # 3. 筛选有截止时间的课题
+                course_work_with_due = []
+                for course_id, course_work_list in course_work_map.items():
+                    for work in course_work_list:
+                        if "dueDate" in work:  # 只处理有截止时间的课题
+                            course_work_with_due.append(work)
+                
+                if not course_work_with_due:
+                    logging.info(f"用户 {username} 没有有截止时间的课题")
+                    return []
+                
+                logging.info(f"用户 {username} 有 {len(course_work_with_due)} 个有截止时间的课题")
+                
+                # 4. 批处理获取课题的学生提交状态
+                submissions_map = await self._get_student_submissions_batch(
+                    session, access_token, course_work_with_due
+                )
+                
+                # 5. 汇总结果
+                pending_assignments = []
+                next_day_utc = datetime.now(timezone.utc) + timedelta(days=1)
+                for work in course_work_with_due:
+                    course_id = work["courseId"]
+                    course_work_id = work["id"]
+                    key = f"{course_id}_{course_work_id}"
+                    
+                    # 检查是否有未完成的提交
+                    submissions = submissions_map.get(key, [])
+                    if submissions:  # 有NEW或CREATED状态的提交，说明未完成
+                        due_date, due_time, utc_dt = self._format_due_datetime(
+                            work.get("dueDate"), 
+                            work.get("dueTime")
+                        )
+                        # 截止日期经过1天则跳过
+                        if utc_dt and utc_dt < next_day_utc:  # 确保截止日期在明天之前
+                            continue
+                        if due_date:  # 确保有有效的截止日期
+                            assignment = {
+                                "title": work.get("title", "未命名课题"),
+                                "courseId": course_id,
+                                "courseName": course_name_map.get(course_id, "未知课程"),
+                                "dueDate": due_date,
+                                "dueTime": due_time,
+                                "description": work.get("description", ""),
+                                "url": self._generate_assignment_url(course_id, course_work_id)
+                            }
+                            pending_assignments.append(assignment)
+                
+                logging.info(f"用户 {username} 有 {len(pending_assignments)} 个未完成的课题")
+                return pending_assignments
+                
+            except Exception as e:
+                logging.error(f"获取用户 {username} 课题时出错: {e}")
+                return []
+
+
+# 全局Google Classroom API实例
+classroom_api = GoogleClassroomAPI()
