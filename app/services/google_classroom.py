@@ -192,19 +192,19 @@ class GoogleClassroomAPI:
     def _format_due_datetime(self, due_date: Dict[str, int], due_time: Optional[Dict[str, int]] = None) -> tuple:
         """格式化截止日期和时间，将UTC时间转换为UTC+9（日本时间）"""
         if not due_date:
-            return None, None, None
-        
+            return None, None
+
         year = due_date.get("year")
         month = due_date.get("month")  
         day = due_date.get("day")
         
         if not all([year, month, day]):
-            return None, None, None
-        
+            return None, None
+
         # 确保类型安全
         if not isinstance(year, int) or not isinstance(month, int) or not isinstance(day, int):
-            return None, None, None
-        
+            return None, None
+
         # 获取时间信息，默认为23:59
         if due_time:
             hours = due_time.get("hours", 0)
@@ -229,13 +229,13 @@ class GoogleClassroomAPI:
             # 格式化输出
             date_str = f"{jst_dt.year:04d}-{jst_dt.month:02d}-{jst_dt.day:02d}"
             time_str = f"{jst_dt.hour:02d}:{jst_dt.minute:02d}"
-            
-            return date_str, time_str, utc_dt
-            
+
+            return date_str, time_str
+
         except ValueError as e:
             logging.error(f"日期时间格式化错误: {e}")
-            return None, None, None
-    
+            return None, None
+
     def _generate_assignment_url(self, course_id: str, course_work_id: str) -> str:
         """生成课题URL"""
         return f"https://classroom.google.com/c/{course_id}/a/{course_work_id}/details"
@@ -344,12 +344,17 @@ class GoogleClassroomAPI:
                 # 2. 批处理获取所有课程的课题
                 course_work_map = await self._get_course_work_batch(session, access_token, course_ids)
                 
-                # 3. 筛选有截止时间的课题
+                # 3. 筛选有截止时间的课题, 并且去除已经超过截止时间1天以上的课题
                 course_work_with_due = []
+                next_day_utc = datetime.now(timezone.utc) + timedelta(days=1)
                 for course_id, course_work_list in course_work_map.items():
                     for work in course_work_list:
                         if "dueDate" in work:  # 只处理有截止时间的课题
-                            course_work_with_due.append(work)
+                            due_date_str = f"{work['dueDate']['year']}-{work['dueDate']['month']:02d}-{work['dueDate']['day']:02d}"
+                            due_date_naive = datetime.fromisoformat(due_date_str)
+                            due_date_utc = due_date_naive.replace(tzinfo=timezone.utc)
+                            if due_date_utc > next_day_utc:
+                                course_work_with_due.append(work)
                 
                 if not course_work_with_due:
                     logging.info(f"用户 {username} 没有有截止时间的课题")
@@ -364,7 +369,6 @@ class GoogleClassroomAPI:
                 
                 # 5. 汇总结果
                 pending_assignments = []
-                next_day_utc = datetime.now(timezone.utc) + timedelta(days=1)
                 for work in course_work_with_due:
                     course_id = work["courseId"]
                     course_work_id = work["id"]
@@ -373,13 +377,10 @@ class GoogleClassroomAPI:
                     # 检查是否有未完成的提交
                     submissions = submissions_map.get(key, [])
                     if submissions:  # 有NEW或CREATED状态的提交，说明未完成
-                        due_date, due_time, utc_dt = self._format_due_datetime(
+                        due_date, due_time = self._format_due_datetime(
                             work.get("dueDate"), 
                             work.get("dueTime")
                         )
-                        # 截止日期经过1天则跳过
-                        if utc_dt and utc_dt < next_day_utc:  # 确保截止日期在明天之前
-                            continue
                         if due_date:  # 确保有有效的截止日期
                             assignment = {
                                 "title": work.get("title", "未命名课题"),
