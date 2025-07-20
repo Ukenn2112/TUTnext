@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 from push_server.push_pool import PushPoolManager
 from app.database import db_manager
+from app.services.google_classroom import classroom_api
 from config import JAPAN_TZ, redis
 
 
@@ -26,6 +27,14 @@ async def monitor_task(
                     kadai_list = await gakuen.get_user_kadai(
                         username, encryptedPassword
                     )
+                    if await db_manager.get_user_tokens(username):
+                        # 如果用户有Google Classroom令牌，则获取Google Classroom课题
+                        classroom_kadai_list = await classroom_api.get_user_assignments(
+                            username
+                        )
+                        if classroom_kadai_list:
+                            # 合并学园系统课题和Google Classroom课题
+                            kadai_list.extend(classroom_kadai_list)
                     break  # 如果成功获取数据，跳出循环
                 except Exception as api_error:
                     if "パスワードが正しくありません" in str(api_error):
@@ -290,7 +299,12 @@ async def monitor_task_push(push_manager):
         for user in users:
             # 为每个用户创建独立的任务
             task = asyncio.create_task(
-                monitor_task(push_manager, user["username"], user["encryptedpassword"], user["devicetoken"])
+                monitor_task(
+                    push_manager,
+                    user["username"],
+                    user["encryptedpassword"],
+                    user["devicetoken"],
+                )
             )
             tasks.append(task)
 
