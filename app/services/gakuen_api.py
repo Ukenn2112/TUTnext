@@ -1089,7 +1089,7 @@ class GakuenAPI:
 
     async def _to_home_page(self) -> BeautifulSoup:
         """ホームページに移動"""
-        home_url = f"{self.base_url}/uprx/up/bs/bsc005/Bsc00501.xhtml"
+        home_url = f"{self.base_url}/uprx/up/bs/bsa001/Bsa00101.xhtml"
         data = {
             "headerForm": "headerForm",
             "rx-token": self.rx["token"],
