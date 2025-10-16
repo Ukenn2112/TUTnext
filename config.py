@@ -1,6 +1,7 @@
 # config.py
 import pytz
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from redis import asyncio as aioredis
 import os
 from dotenv import load_dotenv
@@ -12,11 +13,22 @@ load_dotenv()
 LOG_LEVEL = os.getenv("LOG_LEVEL", "ERROR")
 LOG_FILE = os.getenv("LOG_FILE", "./next.log")
 
+# 创建带日期轮转的文件处理器
+file_handler = TimedRotatingFileHandler(
+    LOG_FILE,
+    when="midnight",  # 每天午夜轮转
+    interval=1,  # 每1天
+    backupCount=5,  # 保留5个备份文件
+    encoding="UTF-8",
+)
+# 设置日期后缀格式，会产生如 2023-10-15-next.log 的文件名
+file_handler.suffix = "%Y-%m-%d"
+
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL.upper()),
     format="[%(levelname)s]%(asctime)s [%(funcName)s:%(lineno)d] -> %(message)s",
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding="UTF-8"),
+        file_handler,
         logging.StreamHandler(),
     ],
 )
@@ -39,7 +51,7 @@ APNS_KEY_CONTENT = None
 # 读取 APNs 私钥文件内容
 if APNS_KEY_FILE_PATH:
     try:
-        with open(APNS_KEY_FILE_PATH, 'r') as f:
+        with open(APNS_KEY_FILE_PATH, "r") as f:
             APNS_KEY_CONTENT = f.read()
     except FileNotFoundError:
         logging.error(f"APNs 私钥文件未找到: {APNS_KEY_FILE_PATH}")
@@ -57,5 +69,14 @@ APNS_CONFIG = {
 }
 
 # 验证必需的 APNS 配置
-if not all([APNS_CONFIG["key"], APNS_CONFIG["key_id"], APNS_CONFIG["team_id"], APNS_CONFIG["topic"]]):
-    raise ValueError("APNS configuration is incomplete. Please check your .env file and ensure the key file exists.")
+if not all(
+    [
+        APNS_CONFIG["key"],
+        APNS_CONFIG["key_id"],
+        APNS_CONFIG["team_id"],
+        APNS_CONFIG["topic"],
+    ]
+):
+    raise ValueError(
+        "APNS configuration is incomplete. Please check your .env file and ensure the key file exists."
+    )
