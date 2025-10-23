@@ -344,16 +344,37 @@ class GoogleClassroomAPI:
                 # 2. 批处理获取所有课程的课题
                 course_work_map = await self._get_course_work_batch(session, access_token, course_ids)
                 
-                # 3. 筛选有截止时间的课题, 并且去除已经超过截止时间1天以上的课题
+                # 3. 筛选有截止时间的课题，并且去除已经超过截止时间1天以上的课题
                 course_work_with_due = []
-                next_day_utc = datetime.now(timezone.utc) + timedelta(days=1)
+                # 获取当前UTC时间减去1天作为阈值
+                one_day_ago_utc = datetime.now(timezone.utc) - timedelta(days=1)
+                
                 for course_id, course_work_list in course_work_map.items():
                     for work in course_work_list:
                         if "dueDate" in work:  # 只处理有截止时间的课题
-                            due_date_str = f"{work['dueDate']['year']}-{work['dueDate']['month']:02d}-{work['dueDate']['day']:02d}"
-                            due_date_naive = datetime.fromisoformat(due_date_str)
-                            due_date_utc = due_date_naive.replace(tzinfo=timezone.utc)
-                            if due_date_utc > next_day_utc:
+                            due_date_data = work['dueDate']
+                            due_time_data = work.get('dueTime')
+                            
+                            # 获取时间信息，如果没有指定时间，默认为23:59（与_format_due_datetime保持一致）
+                            if due_time_data:
+                                hours = due_time_data.get('hours', 0)
+                                minutes = due_time_data.get('minutes', 0)
+                            else:
+                                hours = 23
+                                minutes = 59
+                            
+                            # 构建UTC时间的datetime对象
+                            due_date_utc = datetime(
+                                due_date_data['year'],
+                                due_date_data['month'],
+                                due_date_data['day'],
+                                hours,
+                                minutes,
+                                tzinfo=timezone.utc
+                            )
+                            
+                            # 只保留未超过1天的课题（即截止时间在昨天之后的课题）
+                            if due_date_utc >= one_day_ago_utc:
                                 course_work_with_due.append(work)
                 
                 if not course_work_with_due:
