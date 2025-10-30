@@ -37,7 +37,7 @@ async def monitor_task(
                             kadai_list.extend(classroom_kadai_list)
                     break  # 如果成功获取数据，跳出循环
                 except Exception as api_error:
-                    if "パスワードが正しくありません" in str(api_error):
+                    if "パスワードが正しくありません" in str(api_error) or "セッション情報の抽出に失敗しました" in str(api_error):
                         logging.warning(
                             f"用户 {username} 的密码错误，无法获取课题数据: {api_error}"
                         )
