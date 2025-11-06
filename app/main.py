@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # Include other routes
-app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
+# app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
 app.include_router(bus.router, prefix="/bus", tags=["Bus"])
 app.include_router(kadai.router, prefix="/kadai", tags=["Kadai"])
 app.include_router(push.router, prefix="/push", tags=["Push"])
