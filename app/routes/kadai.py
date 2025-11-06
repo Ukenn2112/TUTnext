@@ -88,11 +88,11 @@ async def get_kadai(data: dict, response: Response):
             redis_kadai_list = await redis.get(f"{username}:kadai")
             kadai_list = json.loads(redis_kadai_list)
         else:
-            gakuen = GakuenAPI(
-                username, "", "https://next.tama.ac.jp", encryptedPassword
-            )
+            # gakuen = GakuenAPI(
+            #     username, "", "https://next.tama.ac.jp", encryptedPassword
+            # )
             tasks = []
-            tasks.append(gakuen.get_user_kadai())
+            # tasks.append(gakuen.get_user_kadai())
             
             # 检查是否有Google Classroom令牌，如果有则添加获取任务
             has_classroom_tokens = await db_manager.get_user_tokens(username)
@@ -136,6 +136,6 @@ async def get_kadai(data: dict, response: Response):
             "status": False,
             "message": str(e),
         }
-    finally:
-        if "gakuen" in locals():
-            await gakuen.close()
+    # finally:
+    #     if "gakuen" in locals():
+    #         await gakuen.close()
