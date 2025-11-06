@@ -168,7 +168,7 @@ class GoogleClassroomAPI:
             key = f"{course_id}_{course_work_id}"
             
             url = f"{self.base_url}/courses/{course_id}/courseWork/{course_work_id}/studentSubmissions"
-            params = {"states": ["NEW", "CREATED"]}
+            params = {"states": ["NEW", "CREATED", "RECLAIMED_BY_STUDENT"]}
             
             # 构建查询参数
             query_params = []
