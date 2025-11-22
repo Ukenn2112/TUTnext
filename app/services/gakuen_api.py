@@ -73,7 +73,7 @@ class GakuenAPI:
         base_url: str,
         encrypted_login_password: Optional[str] = None,
         session: Optional[aiohttp.ClientSession] = None,
-        timeout: int = 10,
+        timeout: int = 20,
         http_proxy: Optional[str] = None,
     ) -> None:
         """GakuenAPIクライアントを初期化
