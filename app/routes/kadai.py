@@ -7,7 +7,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Response, status
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 
-from config import redis
+from config import redis, HTTP_PROXY
 from app.database import db_manager
 from app.services.google_classroom import classroom_api
 
@@ -88,11 +88,11 @@ async def get_kadai(data: dict, response: Response):
             redis_kadai_list = await redis.get(f"{username}:kadai")
             kadai_list = json.loads(redis_kadai_list)
         else:
-            # gakuen = GakuenAPI(
-            #     username, "", "https://next.tama.ac.jp", encryptedPassword
-            # )
+            gakuen = GakuenAPI(
+                username, "", "https://next.tama.ac.jp", encryptedPassword, http_proxy=HTTP_PROXY
+            )
             tasks = []
-            # tasks.append(gakuen.get_user_kadai())
+            tasks.append(gakuen.get_user_kadai())
             
             # 检查是否有Google Classroom令牌，如果有则添加获取任务
             has_classroom_tokens = await db_manager.get_user_tokens(username)

@@ -8,7 +8,7 @@ from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 from push_server.push_pool import PushPoolManager
 from app.database import db_manager
 from app.services.google_classroom import classroom_api
-from config import JAPAN_TZ, redis
+from config import JAPAN_TZ, redis, HTTP_PROXY
 
 
 # 轮询监测任务（课题 等）
@@ -18,7 +18,7 @@ async def monitor_task(
     """处理单个用户的监测任务"""
     try:
         # 为每个用户创建新的GakuenAPI实例
-        gakuen = GakuenAPI("", "", "https://next.tama.ac.jp")
+        gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
         try:
             max_retries = 5
             retry_count = 0
@@ -158,7 +158,7 @@ async def check_tmrw_course_user_push(
     """处理单个用户的推送任务"""
     try:
         # 为每个用户创建新的GakuenAPI实例
-        gakuen = GakuenAPI("", "", "https://next.tama.ac.jp")
+        gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
         try:
             max_retries = 5
             retry_count = 0

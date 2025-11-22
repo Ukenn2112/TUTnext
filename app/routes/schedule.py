@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Response
 from datetime import datetime, timedelta, timezone
 
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
+from config import HTTP_PROXY
 
 router = APIRouter()
 
@@ -17,7 +18,7 @@ async def send_schedule(username=None, password=None):
         raise HTTPException(
             status_code=400, detail="学籍番号またはパスワードを入力してください"
         )
-    gakuen = GakuenAPI(username, password, "https://next.tama.ac.jp")
+    gakuen = GakuenAPI(username, password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
     logging.info(f"login: 学籍番号: {username}")
     try:
         # web_login_data = await gakuen.api_login()  # webapi login

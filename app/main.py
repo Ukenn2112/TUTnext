@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from app.routes import oauth, schedule, bus, kadai, push, tmail
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 from app.database import db_manager
+from config import HTTP_PROXY
 
 
 class UserData(BaseModel):
@@ -27,7 +28,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # Include other routes
-# app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
+app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
 app.include_router(bus.router, prefix="/bus", tags=["Bus"])
 app.include_router(kadai.router, prefix="/kadai", tags=["Kadai"])
 app.include_router(push.router, prefix="/push", tags=["Push"])
@@ -55,7 +56,7 @@ async def policy_page():
 
 @app.post("/login_check")
 async def login_check(data: UserData):
-    gakuen = GakuenAPI(data.username, data.password, "https://next.tama.ac.jp")
+    gakuen = GakuenAPI(data.username, data.password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
     try:
         await gakuen.api_login()
         return {"status": "success"}

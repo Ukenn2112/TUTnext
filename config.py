@@ -80,3 +80,5 @@ if not all(
     raise ValueError(
         "APNS configuration is incomplete. Please check your .env file and ensure the key file exists."
     )
+
+HTTP_PROXY = os.getenv("HTTP_PROXY")  # 可选的 HTTP 代理设置

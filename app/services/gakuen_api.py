@@ -74,6 +74,7 @@ class GakuenAPI:
         encrypted_login_password: Optional[str] = None,
         session: Optional[aiohttp.ClientSession] = None,
         timeout: int = 10,
+        http_proxy: Optional[str] = None,
     ) -> None:
         """GakuenAPIクライアントを初期化
 
@@ -84,11 +85,13 @@ class GakuenAPI:
             encrypted_login_password: 暗号化済みログインパスワード
             session: 既存のaiohttpセッション（省略可）
             timeout: リクエストタイムアウト（秒）
+            http_proxy: HTTPプロキシURL（例: http://127.0.0.1:8888）。利用しない場合は None。
         """
         self.user_id = user_id
         self.password = password
         self.base_url = base_url.rstrip("/")
         self.encrypted_login_password = encrypted_login_password
+        self.http_proxy = http_proxy
 
         # セッション状態管理
         self._session = session
@@ -1281,7 +1284,7 @@ class GakuenAPI:
         _error = False
         try:
             async with self.session.request(
-                method, url, data=data, json=_json
+                method, url, data=data, json=_json, proxy=self.http_proxy
             ) as response:
                 if response.status != 200:
                     if response_type == "json":
