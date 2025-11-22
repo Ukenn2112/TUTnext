@@ -122,7 +122,7 @@ async def monitor_task(
                     f"{kadai['dueDate']} {kadai['dueTime']}", "%Y-%m-%d %H:%M"
                 )
                 kadai_due_time = JAPAN_TZ.localize(naive_due_time)
-                if (kadai_due_time - now_time) < timedelta(hours=1):
+                if timedelta(0) < (kadai_due_time - now_time) < timedelta(hours=1):
                     # 生成唯一的课题标识符
                     kadai_id = f"{username}:{kadai['courseId']}:{kadai['title']}{kadai.get('description', '')}"
                     # 检查是否已经推送过这个课题
