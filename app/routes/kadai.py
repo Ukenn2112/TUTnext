@@ -136,6 +136,6 @@ async def get_kadai(data: dict, response: Response):
             "status": False,
             "message": str(e),
         }
-    # finally:
-    #     if "gakuen" in locals():
-    #         await gakuen.close()
+    finally:
+        if "gakuen" in locals():
+            await gakuen.close()
