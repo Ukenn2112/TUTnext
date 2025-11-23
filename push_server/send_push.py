@@ -2,6 +2,7 @@
 import json
 import asyncio
 import logging
+import sys
 
 from datetime import datetime, timedelta
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
@@ -9,6 +10,34 @@ from push_server.push_pool import PushPoolManager
 from app.database import db_manager
 from app.services.google_classroom import classroom_api
 from config import JAPAN_TZ, redis, HTTP_PROXY
+
+# API错误计数常量
+API_ERROR_LIMIT = 50
+API_ERROR_REDIS_KEY = "api_error_count"
+API_ERROR_EXPIRY = 86400  # 24小时(秒)
+
+
+async def record_api_error():
+    """记录API错误并检查是否达到限制"""
+    try:
+        # 增加错误计数
+        error_count = await redis.incr(API_ERROR_REDIS_KEY)
+        
+        # 如果是第一次记录错误,设置过期时间
+        if error_count == 1:
+            await redis.expire(API_ERROR_REDIS_KEY, API_ERROR_EXPIRY)
+        
+        logging.warning(f"API错误计数: {error_count}/{API_ERROR_LIMIT}")
+        
+        # 检查是否达到限制
+        if error_count >= API_ERROR_LIMIT:
+            logging.critical(f"API错误次数已达到限制({API_ERROR_LIMIT}次/天),程序即将终止")
+            # 清理Redis连接
+            await redis.close()
+            # 终止程序
+            sys.exit(1)
+    except Exception as e:
+        logging.error(f"记录API错误时发生异常: {e}")
 
 
 # 轮询监测任务（课题 等）
@@ -22,6 +51,7 @@ async def monitor_task(
         try:
             max_retries = 5
             retry_count = 0
+            last_error = None
             while retry_count < max_retries:
                 try:
                     kadai_list = await gakuen.get_user_kadai(
@@ -44,6 +74,7 @@ async def monitor_task(
                         await db_manager.delete_user(username)
                         return
                     retry_count += 1
+                    last_error = api_error
                     if retry_count >= max_retries:
                         if "セッション情報の抽出に失敗しました" in str(api_error):
                             logging.warning(
@@ -54,6 +85,8 @@ async def monitor_task(
                         logging.error(
                             f"用户 {username} 获取课题数据失败，已达最大重试次数: {api_error}"
                         )
+                        # 只在重试全部失败后才记录API错误
+                        await record_api_error()
                         raise api_error
                     logging.warning(
                         f"用户 {username} 获取课题数据失败，重试第 {retry_count} 次: {api_error}"
@@ -162,6 +195,7 @@ async def check_tmrw_course_user_push(
         try:
             max_retries = 5
             retry_count = 0
+            last_error = None
             while retry_count < max_retries:
                 try:
                     data = await gakuen.get_later_user_schedule(
@@ -170,10 +204,13 @@ async def check_tmrw_course_user_push(
                     break  # 如果成功获取数据，跳出循环
                 except GakuenAPIError as api_error:
                     retry_count += 1
+                    last_error = api_error
                     if retry_count >= max_retries:
                         logging.error(
                             f"用户 {username} 获取课程数据失败，已达最大重试次数: {api_error}"
                         )
+                        # 只在重试全部失败后才记录API错误
+                        await record_api_error()
                         raise api_error
                     logging.warning(
                         f"用户 {username} 获取课程数据失败，重试第 {retry_count} 次: {api_error}"
