@@ -3,13 +3,14 @@ import json
 import asyncio
 import logging
 import sys
+import aiohttp
 
 from datetime import datetime, timedelta
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 from push_server.push_pool import PushPoolManager
 from app.database import db_manager
 from app.services.google_classroom import classroom_api
-from config import JAPAN_TZ, redis, HTTP_PROXY
+from config import JAPAN_TZ, redis, HTTP_PROXY, NOTIFICATION_API_URL
 
 # API错误计数常量
 API_ERROR_LIMIT = 50
@@ -32,6 +33,22 @@ async def record_api_error():
         # 检查是否达到限制
         if error_count >= API_ERROR_LIMIT:
             logging.critical(f"API错误次数已达到限制({API_ERROR_LIMIT}次/天),程序即将终止")
+            
+            if NOTIFICATION_API_URL:
+                # 发送通知
+                try:
+                    title = "TUTnext推送服务通知"
+                    message = f"API错误次数已达到限制({API_ERROR_LIMIT}次/天),程序已终止"
+                    notification_url = NOTIFICATION_API_URL.format(title=title, message=message)
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(notification_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                            if response.status == 200:
+                                logging.info("通知API调用成功")
+                            else:
+                                logging.warning(f"通知API调用失败,状态码: {response.status}")
+                except Exception as notify_error:
+                    logging.error(f"发送通知时发生异常: {notify_error}")
+            
             # 清理Redis连接
             await redis.close()
             # 终止程序

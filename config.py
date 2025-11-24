@@ -82,3 +82,5 @@ if not all(
     )
 
 HTTP_PROXY = os.getenv("HTTP_PROXY")  # 可选的 HTTP 代理设置
+
+NOTIFICATION_API_URL = os.getenv("NOTIFICATION_API_URL")
