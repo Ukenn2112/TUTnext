@@ -47,20 +47,20 @@ async def schedule_daily_push():
 
 
 async def schedule_monitor_task():
-    """每5分钟运行一次监测任务，但在凌晨3:00至6:00之间不执行"""
+    """每5分钟运行一次监测任务，但在凌晨3:00至6:10之间不执行"""
     while True:
         now = datetime.now(JAPAN_TZ)
 
-        # 检查是否在凌晨3:00至6:00之间
+        # 检查是否在凌晨3:00至6:10之间
         if 3 <= now.hour < 6:
             # 计算到早上6点的等待时间
-            next_run = now.replace(hour=6, minute=0, second=0, microsecond=0)
-            if now.hour == 6 and now.minute >= 0:
+            next_run = now.replace(hour=6, minute=10, second=0, microsecond=0)
+            if now.hour == 6 and now.minute >= 10:
                 next_run = next_run + timedelta(days=1)
 
             wait_seconds = (next_run - now).total_seconds()
             logging.info(
-                f"当前处于休眠时间段 (凌晨3:00-6:00)，将在 {wait_seconds:.1f} 秒后恢复监测任务"
+                f"当前处于休眠时间段 (凌晨3:00-6:10)，将在 {wait_seconds:.1f} 秒后恢复监测任务"
             )
             await sleep(wait_seconds)
             continue
