@@ -843,7 +843,7 @@ class GakuenAPI:
                 }
                 soup = await self._fetch(kadai_info_url, method="POST", data=data)
                 if not isinstance(soup, BeautifulSoup):
-                    print(
+                    logging.warning(
                         f"ユーザー: {self.user_id} の課題データの取得に失敗しました (ID: {kaidai_id} - {link.text}) (スキップします)"
                     )
                     continue
@@ -1037,7 +1037,7 @@ class GakuenAPI:
                         is_last_item = item_index >= total_items - 1
                         if is_last_item:
                             # 最後の課題の場合は正常終了
-                            print(f"ユーザー: {self.user_id} の課題一覧の最後に到達しました")
+                            logging.info(f"ユーザー: {self.user_id} の課題一覧の最後に到達しました")
                             break
                         else:
                             # 最後ではない場合、再試行回数をチェック
@@ -1048,10 +1048,10 @@ class GakuenAPI:
                                     error_code="MAX_RETRIES_EXCEEDED",
                                 )
                             # 現在位置を記録して再ログインして再試行
-                            print(
+                            logging.warning(
                                 f"ユーザー: {self.user_id} の課題取得中にHTTPエラーが発生しました (位置: {item_index + 1}/{total_items}, ID: {kaidai_id}, 再試行: {retry_count}/{max_retries})"
                             )
-                            print("再ログインして続行します...")
+                            logging.warning("再ログインして続行します...")
                             # 再ログインを実行
                             await self._mobile_login()
                             # 課題一覧ページに戻る
@@ -1261,7 +1261,7 @@ class GakuenAPI:
                 }
             except Exception as e:
                 # 個別のレッスン解析エラーはログに記録するが、処理は続行
-                print(f"レッスン情報抽出エラー: {str(e)}")  # または適切なロガーを使用
+                logging.warning(f"レッスン情報抽出エラー: {str(e)}")  # または適切なロガーを使用
                 return None
 
         def __extract_classroom_info(lesson_detail: Tag, span_text: str) -> str:
