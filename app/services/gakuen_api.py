@@ -1,5 +1,6 @@
 # app/services/gakuen_api.py
 import re
+import logging
 import aiohttp
 import json
 import urllib.parse
@@ -816,7 +817,11 @@ class GakuenAPI:
                     "ユーザーの課題データの取得に失敗しました",
                     error_code="USER_KADAI_FETCH_ERROR",
                 )
-            for item in main_content.find_all("li"):
+            all_items = main_content.find_all("li")
+            total_items = len(all_items)
+            retry_count = 0  # 再試行カウンター
+            max_retries = 5  # 最大再試行回数
+            for item_index, item in enumerate(all_items):
                 if not isinstance(item, Tag):
                     continue
                 link = item.find("a")
@@ -1028,9 +1033,54 @@ class GakuenAPI:
                     )
                 except GakuenAPIError as e:
                     if e.error_code == "HTTP_ERROR":
-                        # HTTPエラーが発生した場合はほぼ最後の課題ページであるため、ログを出力して終了
-                        break
-                    raise
+                        # HTTPエラーが発生した場合、最後の課題かどうかをチェック
+                        is_last_item = item_index >= total_items - 1
+                        if is_last_item:
+                            # 最後の課題の場合は正常終了
+                            print(f"ユーザー: {self.user_id} の課題一覧の最後に到達しました")
+                            break
+                        else:
+                            # 最後ではない場合、再試行回数をチェック
+                            retry_count += 1
+                            if retry_count > max_retries:
+                                raise GakuenAPIError(
+                                    f"ユーザー: {self.user_id} の課題取得中にHTTPエラーが発生しました。最大再試行回数({max_retries}回)を超えました (位置: {item_index + 1}/{total_items}, ID: {kaidai_id})",
+                                    error_code="MAX_RETRIES_EXCEEDED",
+                                )
+                            # 現在位置を記録して再ログインして再試行
+                            print(
+                                f"ユーザー: {self.user_id} の課題取得中にHTTPエラーが発生しました (位置: {item_index + 1}/{total_items}, ID: {kaidai_id}, 再試行: {retry_count}/{max_retries})"
+                            )
+                            print("再ログインして続行します...")
+                            # 再ログインを実行
+                            await self._mobile_login()
+                            # 課題一覧ページに戻る
+                            kadai_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50101.xhtml"
+                            data_relogin = {
+                                "pmPage:funcForm": "pmPage:funcForm",
+                                "rx-token": self.rx["token"],
+                                "rx-loginKey": self.rx["loginKey"],
+                                "rx-deviceKbn": self.rx["deviceKbn"],
+                                "rx-loginType": self.rx["loginType"],
+                                "pmPage:funcForm:j_idt114_active": "0,1",
+                                "javax.faces.ViewState": self.view_state,
+                                "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
+                                "rx.sync.source": "pmPage:funcForm:j_idt114:j_idt134",
+                                "pmPage:funcForm:j_idt114:j_idt134": "pmPage:funcForm:j_idt114:j_idt134",
+                            }
+                            soup_relogin = await self._fetch(kadai_url, method="POST", data=data_relogin)
+                            if not isinstance(soup_relogin, BeautifulSoup):
+                                raise GakuenAPIError(
+                                    "再ログイン後の課題データの取得に失敗しました",
+                                    error_code="USER_KADAI_FETCH_ERROR",
+                                )
+                            await self._extract_session_tokens(soup_relogin)
+                            # 次の課題に進む
+                            continue
+                    else:
+                        raise
+                # 正常に処理できた場合、再試行カウンターをリセット
+                retry_count = 0
                 if not isinstance(soup, BeautifulSoup):
                     raise GakuenAPIError(
                         "ユーザーの課題一覧ページの取得に失敗しました",
