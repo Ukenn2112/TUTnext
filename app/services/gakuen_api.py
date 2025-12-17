@@ -599,10 +599,10 @@ class GakuenAPI:
             schedule_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50101.xhtml"
             data = {
                 "javax.faces.partial.ajax": True,
-                "javax.faces.source": "pmPage:funcForm:j_idt98",
-                "javax.faces.partial.execute": "pmPage:funcForm:j_idt98",
+                "javax.faces.source": "pmPage:funcForm:j_idt104",
+                "javax.faces.partial.execute": "pmPage:funcForm:j_idt104",
                 "javax.faces.partial.render": "pmPage:funcForm:mainContent",
-                "pmPage:funcForm:j_idt98": "pmPage:funcForm:j_idt98",
+                "pmPage:funcForm:j_idt104": "pmPage:funcForm:j_idt104",
                 "pmPage:funcForm": "pmPage:funcForm",
                 "rx-token": self.rx["token"],
                 "rx-loginKey": self.rx["loginKey"],
@@ -656,7 +656,14 @@ class GakuenAPI:
                             )
 
                 # 3. 课程信息 (时间表)
-                time_panel = content_soup.select_one("div[id*='j_idt177']")
+                time_panel = None
+                for panel in content_soup.find_all("div", class_="ui-panel-m"):
+                    header = panel.find("h3")
+                    if header and "時間別" in header.text:
+                        time_panel = panel.find("div", class_="ui-datalist")
+                        break
+                if not isinstance(time_panel, Tag):  # fallback for layout/id changes
+                    time_panel = content_soup.find("div", class_="ui-datalist")
                 if isinstance(time_panel, Tag):
                     class_items = time_panel.select("li")
                     for item in class_items:
