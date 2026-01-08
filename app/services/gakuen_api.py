@@ -807,8 +807,8 @@ class GakuenAPI:
                 "pmPage:funcForm:j_idt114_active": "0,1",
                 "javax.faces.ViewState": self.view_state,
                 "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
-                "rx.sync.source": "pmPage:funcForm:j_idt114:j_idt134",
-                "pmPage:funcForm:j_idt114:j_idt134": "pmPage:funcForm:j_idt114:j_idt134",
+                "rx.sync.source": "pmPage:funcForm:j_idt107:j_idt126",
+                "pmPage:funcForm:j_idt107:j_idt126": "pmPage:funcForm:j_idt107:j_idt126",
             }
             soup = await self._fetch(kadai_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
@@ -1072,8 +1072,8 @@ class GakuenAPI:
                                 "pmPage:funcForm:j_idt114_active": "0,1",
                                 "javax.faces.ViewState": self.view_state,
                                 "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
-                                "rx.sync.source": "pmPage:funcForm:j_idt114:j_idt134",
-                                "pmPage:funcForm:j_idt114:j_idt134": "pmPage:funcForm:j_idt114:j_idt134",
+                                "rx.sync.source": "pmPage:funcForm:j_idt107:j_idt126",
+                                "pmPage:funcForm:j_idt107:j_idt126": "pmPage:funcForm:j_idt107:j_idt126",
                             }
                             soup_relogin = await self._fetch(kadai_url, method="POST", data=data_relogin)
                             if not isinstance(soup_relogin, BeautifulSoup):
