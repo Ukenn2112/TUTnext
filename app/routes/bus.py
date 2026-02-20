@@ -834,6 +834,45 @@ async def app_schedule():
                     (start_date + timedelta(days=i)).strftime("%Y年%m月%d日")
                     for i in range((end_date - start_date).days + 1)
                 ]
+            # 检测混合格式：2026年2月9日(月)、10日(火)、16日(月)～20日(金)、24日(火)～27日(金)
+            elif match := re.match(
+                r"(\d{4})年(\d{1,2})月(\d{1,2})日\(.\)"
+                r"((?:、(?:(?:\d{1,2})月)?(?:\d{1,2})日\(.\)(?:～(?:(?:\d{1,2})月)?(?:\d{1,2})日\(.\))?)+)",
+                title,
+            ):
+                year = int(match.group(1))
+                current_month = int(match.group(2))
+                first_day = int(match.group(3))
+                tail = match.group(4)
+
+                date_range = [datetime(year, current_month, first_day).strftime("%Y年%m月%d日")]
+
+                for seg in (s for s in tail.split("、") if s):
+                    # 判断是否为区间段：dd日(曜)～dd日(曜) 或跨月
+                    range_match = re.match(
+                        r"(?:(\d{1,2})月)?(\d{1,2})日\(.\)～(?:(\d{1,2})月)?(\d{1,2})日\(.\)",
+                        seg,
+                    )
+                    if range_match:
+                        start_month = int(range_match.group(1)) if range_match.group(1) else current_month
+                        start_day   = int(range_match.group(2))
+                        end_month   = int(range_match.group(3)) if range_match.group(3) else start_month
+                        end_day     = int(range_match.group(4))
+                        current_month = end_month  # 更新月份上下文
+                        start_dt = datetime(year, start_month, start_day)
+                        end_dt   = datetime(year, end_month,   end_day)
+                        date_range.extend(
+                            (start_dt + timedelta(days=i)).strftime("%Y年%m月%d日")
+                            for i in range((end_dt - start_dt).days + 1)
+                        )
+                    else:
+                        # 单一日期段：dd日(曜) 或 mm月dd日(曜)
+                        single_match = re.match(r"(?:(\d{1,2})月)?(\d{1,2})日\(.\)", seg)
+                        if single_match:
+                            month = int(single_match.group(1)) if single_match.group(1) else current_month
+                            day   = int(single_match.group(2))
+                            current_month = month  # 更新月份上下文
+                            date_range.append(datetime(year, month, day).strftime("%Y年%m月%d日"))
             # 检测格式：2025年7月11日(金)、18日(金)、25日(金)...
             elif match := re.match(
                 r"(\d{4})年(\d{1,2})月(\d{1,2})日\((.)\)((?:、(\d{1,2})日\((.)\))+)",
