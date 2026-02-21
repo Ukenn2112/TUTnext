@@ -4,793 +4,17 @@ from bs4 import BeautifulSoup, Tag
 from fastapi import APIRouter
 from datetime import datetime, timedelta
 import re
+import json
+
+from app.utils.parse_bus_temp import parse_temp_pdf
 
 router = APIRouter()
-
-app_data = {
-    "weekday": {
-        "fromSeisekiToSchool": [
-            {
-                "hour": 7,
-                "times": [
-                    {"hour": 7, "minute": 25, "isSpecial": True, "specialNote": "C"}
-                ],
-            },
-            {
-                "hour": 8,
-                "times": [
-                    {"hour": 8, "minute": 0, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 35, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 15, "isSpecial": False, "specialNote": None}
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 0, "isSpecial": False, "specialNote": None}
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 40, "isSpecial": False, "specialNote": None}
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 25, "isSpecial": True, "specialNote": "◯"}
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 10, "isSpecial": False, "specialNote": None}
-                ],
-            },
-            {
-                "hour": 15,
-                "times": [
-                    {"hour": 15, "minute": 10, "isSpecial": False, "specialNote": None}
-                ],
-            },
-        ],
-        "fromNagayamaToSchool": [
-            {
-                "hour": 7,
-                "times": [
-                    {"hour": 7, "minute": 10, "isSpecial": False, "specialNote": None},
-                    {"hour": 7, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 7, "minute": 25, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 35, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 40, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 50, "isSpecial": True, "specialNote": "K"},
-                ],
-            },
-            {
-                "hour": 8,
-                "times": [
-                    {"hour": 8, "minute": 0, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 5, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 20, "isSpecial": False, "specialNote": None},
-                    {"hour": 8, "minute": 35, "isSpecial": False, "specialNote": None},
-                    {"hour": 8, "minute": 40, "isSpecial": False, "specialNote": None},
-                    {"hour": 8, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 20, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 25, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 55, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 35, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 55, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 16,
-                "times": [
-                    {"hour": 16, "minute": 0, "isSpecial": False, "specialNote": None},
-                ],
-            },
-        ],
-        "fromSchoolToSeiseki": [
-            {
-                "hour": 9,
-                "times": [
-                    {"hour": 9, "minute": 55, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 20, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 0, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 13, "minute": 50, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 50, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 16,
-                "times": [
-                    {"hour": 16, "minute": 5, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 25, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 45, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 17,
-                "times": [
-                    {"hour": 17, "minute": 15, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 17, "minute": 50, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 18,
-                "times": [
-                    {"hour": 18, "minute": 5, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 18, "minute": 40, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 19,
-                "times": [
-                    {"hour": 19, "minute": 40, "isSpecial": True, "specialNote": "M"},
-                ],
-            },
-        ],
-        "fromSchoolToNagayama": [
-            {
-                "hour": 9,
-                "times": [
-                    {"hour": 9, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 5, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 30, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 20, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 30, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 40, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 16,
-                "times": [
-                    {"hour": 16, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 5, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 30, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 17,
-                "times": [
-                    {"hour": 17, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 18,
-                "times": [
-                    {"hour": 18, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 18, "minute": 35, "isSpecial": False, "specialNote": None},
-                    {"hour": 18, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 19,
-                "times": [
-                    {"hour": 19, "minute": 40, "isSpecial": True, "specialNote": "M"},
-                ],
-            },
-        ],
-    },
-    "wednesday": {
-        "fromSeisekiToSchool": [
-            {
-                "hour": 7,
-                "times": [
-                    {"hour": 7, "minute": 25, "isSpecial": True, "specialNote": "C"}
-                ],
-            },
-            {
-                "hour": 8,
-                "times": [
-                    {"hour": 8, "minute": 0, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 35, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 15, "isSpecial": False, "specialNote": None}
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 0, "isSpecial": False, "specialNote": None}
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 40, "isSpecial": False, "specialNote": None}
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 25, "isSpecial": True, "specialNote": "◯"}
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 10, "isSpecial": False, "specialNote": None}
-                ],
-            },
-            {
-                "hour": 15,
-                "times": [
-                    {"hour": 15, "minute": 10, "isSpecial": False, "specialNote": None}
-                ],
-            },
-        ],
-        "fromNagayamaToSchool": [
-            {
-                "hour": 7,
-                "times": [
-                    {"hour": 7, "minute": 10, "isSpecial": False, "specialNote": None},
-                    {"hour": 7, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 7, "minute": 25, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 35, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 40, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 50, "isSpecial": True, "specialNote": "K"},
-                ],
-            },
-            {
-                "hour": 8,
-                "times": [
-                    {"hour": 8, "minute": 0, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 5, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 20, "isSpecial": False, "specialNote": None},
-                    {"hour": 8, "minute": 35, "isSpecial": False, "specialNote": None},
-                    {"hour": 8, "minute": 40, "isSpecial": False, "specialNote": None},
-                    {"hour": 8, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 20, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 25, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 55, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 35, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 55, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 16,
-                "times": [
-                    {"hour": 16, "minute": 0, "isSpecial": False, "specialNote": None},
-                ],
-            },
-        ],
-        "fromSchoolToSeiseki": [
-            {
-                "hour": 9,
-                "times": [
-                    {"hour": 9, "minute": 55, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 20, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 0, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 13, "minute": 20, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 13, "minute": 50, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 50, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 15,
-                "times": [
-                    {"hour": 15, "minute": 25, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 16,
-                "times": [
-                    {"hour": 16, "minute": 5, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 25, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 45, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 17,
-                "times": [
-                    {"hour": 17, "minute": 15, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 17, "minute": 50, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 18,
-                "times": [
-                    {"hour": 18, "minute": 5, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 18, "minute": 40, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 19,
-                "times": [
-                    {"hour": 19, "minute": 40, "isSpecial": True, "specialNote": "M"},
-                ],
-            },
-        ],
-        "fromSchoolToNagayama": [
-            {
-                "hour": 9,
-                "times": [
-                    {"hour": 9, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 5, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 30, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 20, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 30, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 55, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 13, "minute": 5, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 35, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 40, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 50, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 15,
-                "times": [
-                    {"hour": 14, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 14, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 16,
-                "times": [
-                    {"hour": 16, "minute": 5, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 16, "minute": 30, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 18,
-                "times": [
-                    {"hour": 18, "minute": 0, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 19,
-                "times": [
-                    {"hour": 19, "minute": 40, "isSpecial": True, "specialNote": "M"},
-                ],
-            },
-        ],
-    },
-    "saturday": {
-        "fromSeisekiToSchool": [
-            {
-                "hour": 7,
-                "times": [
-                    {"hour": 7, "minute": 25, "isSpecial": True, "specialNote": "C"}
-                ],
-            },
-            {
-                "hour": 8,
-                "times": [
-                    {"hour": 8, "minute": 0, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 25, "isSpecial": True, "specialNote": "◯"},
-                    {"hour": 8, "minute": 55, "isSpecial": True, "specialNote": "◯"},
-                ],
-            },
-            {
-                "hour": 9,
-                "times": [
-                    {"hour": 9, "minute": 25, "isSpecial": True, "specialNote": "◯"},
-                    {"hour": 9, "minute": 55, "isSpecial": True, "specialNote": "◯"},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 25, "isSpecial": True, "specialNote": "◯"},
-                    {"hour": 10, "minute": 55, "isSpecial": True, "specialNote": "◯"},
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 55, "isSpecial": True, "specialNote": "◯"},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 50, "isSpecial": True, "specialNote": "◯"},
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 20, "isSpecial": True, "specialNote": "◯"}
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 25, "isSpecial": False, "specialNote": None}
-                ],
-            },
-        ],
-        "fromNagayamaToSchool": [
-            {
-                "hour": 7,
-                "times": [
-                    {"hour": 7, "minute": 10, "isSpecial": False, "specialNote": None},
-                    {"hour": 7, "minute": 15, "isSpecial": False, "specialNote": None},
-                    {"hour": 7, "minute": 25, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 35, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 40, "isSpecial": True, "specialNote": "C"},
-                    {"hour": 7, "minute": 50, "isSpecial": True, "specialNote": "K"},
-                ],
-            },
-            {
-                "hour": 8,
-                "times": [
-                    {"hour": 8, "minute": 0, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 5, "isSpecial": True, "specialNote": "K"},
-                    {"hour": 8, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 9,
-                "times": [
-                    {"hour": 9, "minute": 10, "isSpecial": False, "specialNote": None},
-                    {"hour": 9, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 10, "isSpecial": False, "specialNote": None},
-                    {"hour": 10, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 10, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 10, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 40, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 50, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 5, "isSpecial": False, "specialNote": None},
-                    {"hour": 13, "minute": 35, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-        ],
-        "fromSchoolToSeiseki": [
-            {
-                "hour": 9,
-                "times": [
-                    {"hour": 9, "minute": 30, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 10,
-                "times": [
-                    {"hour": 10, "minute": 0, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 10, "minute": 30, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 40, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 30, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 55, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 13,
-                "times": [
-                    {"hour": 13, "minute": 25, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 14,
-                "times": [
-                    {"hour": 14, "minute": 0, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 14, "minute": 30, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 15,
-                "times": [
-                    {"hour": 15, "minute": 0, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 15, "minute": 30, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 16,
-                "times": [
-                    {"hour": 16, "minute": 0, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 16, "minute": 30, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 17,
-                "times": [
-                    {"hour": 17, "minute": 0, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 17, "minute": 30, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-            {
-                "hour": 18,
-                "times": [
-                    {"hour": 18, "minute": 0, "isSpecial": True, "specialNote": "*"},
-                    {"hour": 18, "minute": 30, "isSpecial": True, "specialNote": "*"},
-                ],
-            },
-        ],
-        "fromSchoolToNagayama": [
-            {
-                "hour": 11,
-                "times": [
-                    {"hour": 11, "minute": 0, "isSpecial": False, "specialNote": None},
-                    {"hour": 11, "minute": 30, "isSpecial": False, "specialNote": None},
-                    {"hour": 11, "minute": 35, "isSpecial": False, "specialNote": None},
-                    {"hour": 11, "minute": 40, "isSpecial": False, "specialNote": None},
-                    {"hour": 11, "minute": 55, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 12,
-                "times": [
-                    {"hour": 12, "minute": 25, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 30, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 35, "isSpecial": False, "specialNote": None},
-                    {"hour": 12, "minute": 50, "isSpecial": False, "specialNote": None},
-                ],
-            },
-            {
-                "hour": 16,
-                "times": [
-                    {"hour": 16, "minute": 45, "isSpecial": False, "specialNote": None},
-                ],
-            },
-        ],
-    },
-}
 
 
 @router.get("/app_data")
 async def app_schedule():
-    # app_data 进行修正处理
-    route_mapping = {
-        "fromSeisekiToSchool": "fromNagayamaToSchool",
-        "fromSchoolToSeiseki": "fromSchoolToNagayama",
-    }
-
-    # 处理特殊标记"*"的时间，将其复制到对应的Nagayama路线
-    for day in ["weekday", "wednesday", "saturday"]:
-        for source_route, target_route in route_mapping.items():
-            if source_route not in app_data[day]:
-                continue
-
-            # 为目标路线创建小时索引以提高查找效率
-            target_hours = {
-                hour_data["hour"]: hour_data
-                for hour_data in app_data[day][target_route]
-            }
-
-            for hour_data in app_data[day][source_route]:
-                # 筛选出带有"*"标记的时间
-                special_times = [
-                    time for time in hour_data["times"] if time["specialNote"] == "*"
-                ]
-
-                if special_times:
-                    hour = hour_data["hour"]
-                    # 如果目标路线中已存在该小时，直接添加时间
-                    if hour in target_hours:
-                        for time in special_times:
-                            # 检查时间是否已存在于目标路线中 如果存在将其时间的isSpecial标记设置为True
-                            if existing_time := next(
-                                (
-                                    t
-                                    for t in target_hours[hour]["times"]
-                                    if t["hour"] == time["hour"]
-                                    and t["minute"] == time["minute"]
-                                ),
-                                None,
-                            ):
-                                existing_time["isSpecial"] = True
-                                existing_time["specialNote"] = "*"
-                            else:
-                                target_hours[hour]["times"].append(time)
-                    else:
-                        # 创建新的小时条目并添加到目标路线
-                        new_hour_data = {"hour": hour, "times": special_times.copy()}
-                        app_data[day][target_route].append(new_hour_data)
-                        target_hours[hour] = new_hour_data
-
-    # 对所有路线的时间进行排序
-    for day_data in app_data.values():
-        for route_data in day_data.values():
-            route_data.sort(key=lambda x: x["hour"])
-            for hour_data in route_data:
-                hour_data["times"].sort(key=lambda x: (x["hour"], x["minute"]))
+    app_data = json.loads(open("app/data/bus_data.json", "r", encoding="utf-8").read())
+    # app_data = {'title': '2025年度 基準時刻表', 'notes': {'◎': '经永山站到达学校的班次', '*': '经永山站到达圣迹樱丘站的班次', 'M': '大学生专用微型巴士（仅周一～周四）', 'C': '中学生专用班次', 'K': '高中生专用班次'}, 'weekday': {'fromSeisekiToSchool': [...], 'fromNagayamaToSchool': [...], 'fromSchoolToNagayama': [...], 'fromSchoolToSeiseki': [...]}, 'saturday': {'fromSeisekiToSchool': [...], 'fromNagayamaToSchool': [...], 'fromSchoolToNagayama': [...], 'fromSchoolToSeiseki': [...]}, 'wednesday': {'fromSeisekiToSchool': [...], 'fromNagayamaToSchool': [...], 'fromSchoolToNagayama': [...], 'fromSchoolToSeiseki': [...]}}
 
     # 从学校主页上获取临时巴士数据
     web_data = get("https://www.tama.ac.jp/guide/campus/schoolbus.html")
@@ -845,7 +69,9 @@ async def app_schedule():
                 first_day = int(match.group(3))
                 tail = match.group(4)
 
-                date_range = [datetime(year, current_month, first_day).strftime("%Y年%m月%d日")]
+                date_range = [
+                    datetime(year, current_month, first_day).strftime("%Y年%m月%d日")
+                ]
 
                 for seg in (s for s in tail.split("、") if s):
                     # 判断是否为区间段：dd日(曜)～dd日(曜) 或跨月
@@ -854,25 +80,41 @@ async def app_schedule():
                         seg,
                     )
                     if range_match:
-                        start_month = int(range_match.group(1)) if range_match.group(1) else current_month
-                        start_day   = int(range_match.group(2))
-                        end_month   = int(range_match.group(3)) if range_match.group(3) else start_month
-                        end_day     = int(range_match.group(4))
+                        start_month = (
+                            int(range_match.group(1))
+                            if range_match.group(1)
+                            else current_month
+                        )
+                        start_day = int(range_match.group(2))
+                        end_month = (
+                            int(range_match.group(3))
+                            if range_match.group(3)
+                            else start_month
+                        )
+                        end_day = int(range_match.group(4))
                         current_month = end_month  # 更新月份上下文
                         start_dt = datetime(year, start_month, start_day)
-                        end_dt   = datetime(year, end_month,   end_day)
+                        end_dt = datetime(year, end_month, end_day)
                         date_range.extend(
                             (start_dt + timedelta(days=i)).strftime("%Y年%m月%d日")
                             for i in range((end_dt - start_dt).days + 1)
                         )
                     else:
                         # 单一日期段：dd日(曜) 或 mm月dd日(曜)
-                        single_match = re.match(r"(?:(\d{1,2})月)?(\d{1,2})日\(.\)", seg)
+                        single_match = re.match(
+                            r"(?:(\d{1,2})月)?(\d{1,2})日\(.\)", seg
+                        )
                         if single_match:
-                            month = int(single_match.group(1)) if single_match.group(1) else current_month
-                            day   = int(single_match.group(2))
+                            month = (
+                                int(single_match.group(1))
+                                if single_match.group(1)
+                                else current_month
+                            )
+                            day = int(single_match.group(2))
                             current_month = month  # 更新月份上下文
-                            date_range.append(datetime(year, month, day).strftime("%Y年%m月%d日"))
+                            date_range.append(
+                                datetime(year, month, day).strftime("%Y年%m月%d日")
+                            )
             # 检测格式：2025年7月11日(金)、18日(金)、25日(金)...
             elif match := re.match(
                 r"(\d{4})年(\d{1,2})月(\d{1,2})日\((.)\)((?:、(\d{1,2})日\((.)\))+)",
@@ -919,4 +161,19 @@ async def app_schedule():
                     + web_data.get("href"),
                 }
             )
+    if pin_messages:
+        try:
+            pin_data = parse_temp_pdf(pin_messages["url"])
+        except Exception as e:
+            pass
+        else:
+            # 判断当天星期几，并选择对应的时刻表
+            today_weekday = datetime.now().weekday()
+            # 0=周一, 1=周二, 2=周三, 3=周四, 4=周五, 5=周六, 6=周日
+            if today_weekday == 6 or today_weekday == 5:  # 周六或周日
+                app_data["saturday"] = pin_data
+            elif today_weekday == 2:  # 周三
+                app_data["wednesday"] = pin_data
+            else:  # 工作日
+                app_data["weekday"] = pin_data
     return {"messages": _messages, "data": app_data, "pin": pin_messages}

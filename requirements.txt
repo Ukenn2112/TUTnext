@@ -12,3 +12,4 @@ pytz
 PyJWT==2.6.0
 cryptography==37.0.4
 python-dotenv
+pdfplumber
