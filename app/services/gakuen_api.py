@@ -64,6 +64,183 @@ class GakuenPermissionError(GakuenAPIError):
     pass
 
 
+class _SessionState:
+    """Web セッション状態の純粋データコンテナ"""
+
+    def __init__(self) -> None:
+        self.rx_tokens: dict = {}
+        self.view_state: Optional[str] = None
+        self.class_list: dict = {}
+        self.web_is_logged_in: bool = False
+        self.api_is_logged_in: bool = False
+        self.first_setting: Optional[dict] = None
+
+    def update_from_soup(self, soup: BeautifulSoup) -> None:
+        """BeautifulSoup オブジェクトからセッショントークンを抽出"""
+        token_mapping = {
+            "rx-token": "token",
+            "rx-loginKey": "loginKey",
+            "rx-deviceKbn": "deviceKbn",
+            "rx-loginType": "loginType",
+        }
+        for input_tag in soup.find_all("input"):
+            if not isinstance(input_tag, Tag):
+                continue
+            name = input_tag.get("name")
+            value = input_tag.get("value")
+            if isinstance(name, str) and name in token_mapping:
+                self.rx_tokens[token_mapping[name]] = value
+            elif name == "javax.faces.ViewState" and isinstance(value, str):
+                self.view_state = value
+
+
+class _HttpClient:
+    """HTTP 通信層"""
+
+    def __init__(
+        self,
+        session: Optional[aiohttp.ClientSession],
+        timeout: int,
+        http_proxy: Optional[str],
+    ) -> None:
+        self._owns_session = session is None
+        self.session = session or aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=timeout)
+        )
+        self.http_proxy = http_proxy
+
+    async def fetch(
+        self,
+        url: str,
+        method: Literal["GET", "POST"] = "POST",
+        data: Optional[dict] = None,
+        _json: Optional[dict] = None,
+        response_type: Literal["json", "soup"] = "soup",
+        features: Optional[str] = "html.parser",
+    ) -> Optional[Union[BeautifulSoup, dict]]:
+        """指定されたURLからデータを取得し、BeautifulSoup と Json オブジェクトを返す"""
+        _error = False
+        try:
+            async with self.session.request(
+                method, url, data=data, json=_json, proxy=self.http_proxy
+            ) as response:
+                if response.status != 200:
+                    if response_type == "json":
+                        _error = True
+                    else:
+                        raise GakuenNetworkError(
+                            f"HTTPエラー: {response.reason}",
+                            error_code="HTTP_ERROR",
+                            status_code=response.status,
+                        )
+                html = await response.text()
+                if response_type == "json":
+                    if "innerInfo" in html:
+                        soup = BeautifulSoup(html, "html.parser")
+                        if error_msg := soup.find("p", class_="innerInfo"):
+                            raise GakuenAPIError(
+                                f"APIエラー: {error_msg.text}",
+                                error_code="API_ERROR",
+                            )
+                    try:
+                        out_json = json.loads(
+                            urllib.parse.unquote(html)
+                            .replace("\u3000", " ")
+                            .replace("+", " ")
+                        )
+                        if _error:
+                            raise GakuenAPIError(
+                                f"APIレスポンスが不正です: {''.join(out_json['statusDto']['messageList'])}",
+                                error_code="INVALID_API_RESPONSE",
+                            )
+                    except json.JSONDecodeError as e:
+                        raise GakuenAPIError(
+                            f"JSONデコードエラー: {str(e)}",
+                            error_code="JSON_DECODE_ERROR",
+                        )
+                    return out_json
+                return BeautifulSoup(html, features)
+        except aiohttp.ClientError as e:
+            raise GakuenNetworkError(
+                f"ネットワークエラー: {str(e)}",
+                error_code="NETWORK_ERROR",
+            ) from e
+
+    async def close(self) -> None:
+        """セッションを閉じる"""
+        if self._owns_session and not self.session.closed:
+            await self.session.close()
+
+
+class _MobilePageIds:
+    """PrimeFaces コンポーネント ID の動的レジストリ"""
+
+    def __init__(self) -> None:
+        self.schedule_component_id: Optional[str] = None  # desktop: j_idt387
+        self.kadai_tab_id: Optional[str] = None           # desktop: j_idt176:j_idt229
+        self.calendar_id: Optional[str] = None            # mobile: pmPage:funcForm:j_idt104
+        self.accordion_id: Optional[str] = None           # mobile: pmPage:funcForm:j_idt107
+        self.kadai_tab_link_id: Optional[str] = None      # mobile: pmPage:funcForm:j_idt107:j_idt125
+        self.menu_button_id: Optional[str] = None         # questionnaire bypass: pmPage:menuForm:j_idt36:0:menuBtnF
+
+    @property
+    def accordion_active_id(self) -> Optional[str]:
+        """AccordionPanel のアクティブ状態 hidden input ID"""
+        return f"{self.accordion_id}_active" if self.accordion_id else None
+
+    def extract_desktop_ids(self, soup: BeautifulSoup) -> None:
+        """デスクトップ画面の PrimeFaces コンポーネント ID を抽出
+        Fix 1: script_tags[34] の位置指定を廃止し、スクリプト内容で検索する
+        """
+        for script in soup.find_all("script", type="text/javascript"):
+            txt = script.string or ""
+            if 'PrimeFaces.cw("Schedule"' in txt:
+                m = re.search(r'id:"(funcForm:[^"]+)"', txt)
+                if m:
+                    self.schedule_component_id = m.group(1).split(":")[1]
+                break
+
+        portal_support = soup.find("ul", role="tablist")
+        if (
+            isinstance(portal_support, Tag)
+            and (a := portal_support.find_all("a"))
+            and len(a) > 1
+            and isinstance(b := a[-1], Tag)
+            and isinstance(href := b.get("href"), str)
+        ):
+            self.kadai_tab_id = href.lstrip("#funcForm:")
+
+    def extract_mobile_ids(self, soup: BeautifulSoup) -> None:
+        """モバイル画面の PrimeFaces コンポーネント ID を動的に抽出
+        Fix 2: ハードコードされた ID を廃止し、PrimeFaces スクリプトから動的に取得する
+        """
+        for script in soup.find_all("script", type="text/javascript"):
+            txt = script.string or ""
+            if 'PrimeFaces.cw("Calendar"' in txt and not self.calendar_id:
+                m = re.search(
+                    r'PrimeFaces\.cw\("Calendar".*?id:"(pmPage:funcForm:[^"]+)"',
+                    txt, re.DOTALL
+                )
+                if m:
+                    self.calendar_id = m.group(1)
+            if 'PrimeFaces.cw("AccordionPanel"' in txt and not self.accordion_id:
+                m = re.search(
+                    r'PrimeFaces\.cw\("AccordionPanel".*?id:"(pmPage:funcForm:[^"]+)"',
+                    txt, re.DOTALL
+                )
+                if m:
+                    self.accordion_id = m.group(1)
+
+        # Find the "期限あり" tab navigation link ID
+        if not self.kadai_tab_link_id:
+            for a_tag in soup.find_all("a"):
+                if isinstance(a_tag, Tag) and "期限あり" in a_tag.get_text():
+                    link_id = a_tag.get("id")
+                    if isinstance(link_id, str):
+                        self.kadai_tab_link_id = link_id
+                        break
+
+
 class GakuenAPI:
     """学園システムAPIクライアント"""
 
@@ -94,72 +271,51 @@ class GakuenAPI:
         self.encrypted_login_password = encrypted_login_password
         self.http_proxy = http_proxy
 
-        # セッション状態管理
-        self._session = session
-        self._owns_session = session is None
-        self.session = session or aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=timeout)
-        )
+        self._http = _HttpClient(session, timeout, http_proxy)
+        self._state = _SessionState()
+        self._ids = _MobilePageIds()
 
-        # 内部状態の初期化
-        self._state = self._initialize_state()
+        # Backward compatibility: expose session reference
+        self.session = self._http.session
+        self._owns_session = self._http._owns_session
 
-    def _initialize_state(self) -> dict:
-        """内部状態を初期化"""
-        return {
-            "j_idt": None,
-            "j_idt_kadai": None,
-            "rx_tokens": {},
-            "view_state": None,
-            "class_list": {},
-            "web_is_logged_in": False,
-            "api_is_logged_in": False,
-        }
+    # --- Backward-compatible property accessors ---
 
     @property
     def j_idt(self) -> Optional[str]:
-        """j_idt値を取得"""
-        return self._state["j_idt"]
+        return self._ids.schedule_component_id
 
     @j_idt.setter
     def j_idt(self, value: str) -> None:
-        """j_idt値を設定"""
-        self._state["j_idt"] = value
+        self._ids.schedule_component_id = value
 
     @property
     def j_idt_kadai(self) -> Optional[str]:
-        """j_idt_kadai値を取得"""
-        return self._state["j_idt_kadai"]
+        return self._ids.kadai_tab_id
 
     @j_idt_kadai.setter
     def j_idt_kadai(self, value: str) -> None:
-        """j_idt_kadai値を設定"""
-        self._state["j_idt_kadai"] = value
+        self._ids.kadai_tab_id = value
 
     @property
     def rx(self) -> dict:
-        """rxトークン辞書を取得"""
-        return self._state["rx_tokens"]
+        return self._state.rx_tokens
 
     @property
     def view_state(self) -> Optional[str]:
-        """ViewState値を取得"""
-        return self._state["view_state"]
+        return self._state.view_state
 
     @view_state.setter
     def view_state(self, value: str) -> None:
-        """ViewState値を設定"""
-        self._state["view_state"] = value
+        self._state.view_state = value
 
     @property
     def class_list(self) -> dict:
-        """クラス一覧を取得"""
-        return self._state["class_list"]
+        return self._state.class_list
 
     async def close(self) -> None:
         """セッションを閉じる"""
-        if self._owns_session and self.session and not self.session.closed:
-            await self.session.close()
+        await self._http.close()
 
     async def __aenter__(self):
         """非同期コンテキストマネージャー（入口）"""
@@ -188,7 +344,7 @@ class GakuenAPI:
             "javax.faces.ViewState": "stateless",
         }
         try:
-            soup = await self._fetch(login_url, method="POST", data=data)
+            soup = await self._http.fetch(login_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
                 raise GakuenLoginError(
                     "ログインに失敗しました。サーバーからの応答がありません。",
@@ -198,18 +354,18 @@ class GakuenAPI:
                 raise GakuenLoginError(
                     f"ログインエラー: {error_msg.text}", error_code="LOGIN_FAILED"
                 )
-            await self._extract_session_tokens(soup)
+            self._state.update_from_soup(soup)
             if soup.find("dt", class_="msgArea"):  # 重要アンケートがある場合
                 soup = await self._to_home_page()
-                await self._extract_session_tokens(soup)
-            await self._extract_javascript_ids(soup)
+                self._state.update_from_soup(soup)
+            self._ids.extract_desktop_ids(soup)
             await self._fetch_class_list(soup)
-            if not self.class_list:
+            if not self._state.class_list:
                 raise GakuenDataError(
                     "クラスデータが取得できませんでした", error_code="NO_CLASS_DATA"
                 )
-            self._state["web_is_logged_in"] = True
-            return self.class_list
+            self._state.web_is_logged_in = True
+            return self._state.class_list
         except Exception as e:
             if isinstance(e, GakuenAPIError):
                 raise
@@ -239,7 +395,7 @@ class GakuenAPI:
                 - "room": 教室名
                 - "allDay": 終日イベントかどうか（bool）
         """
-        if not self._state["web_is_logged_in"]:
+        if not self._state.web_is_logged_in:
             raise GakuenPermissionError(
                 "Web ログインが必要です", error_code="NOT_LOGGED_IN"
             )
@@ -247,21 +403,22 @@ class GakuenAPI:
         # 月初のタイムスタンプを生成（ミリ秒単位）
         month_timestamp = str(int(datetime(year, month, 1).timestamp())) + "000"
         month_url = f"{self.base_url}/uprx/up/bs/bsa001/Bsa00101.xhtml"
+        j_idt = self._ids.schedule_component_id
         data = {
             "javax.faces.partial.ajax": True,
-            f"javax.faces.partial.render": f"funcForm:{self.j_idt}:content",
-            f"funcForm:{self.j_idt}:content": f"funcForm:{self.j_idt}:content",
-            f"funcForm:{self.j_idt}:content_start": month_timestamp,
-            f"funcForm:{self.j_idt}:content_end": month_timestamp,
-            "rx-token": self.rx["token"],
-            "rx-loginKey": self.rx["loginKey"],
-            "rx-deviceKbn": self.rx["deviceKbn"],
-            "rx-loginType": self.rx["loginType"],
-            "javax.faces.ViewState": self.view_state,
+            f"javax.faces.partial.render": f"funcForm:{j_idt}:content",
+            f"funcForm:{j_idt}:content": f"funcForm:{j_idt}:content",
+            f"funcForm:{j_idt}:content_start": month_timestamp,
+            f"funcForm:{j_idt}:content_end": month_timestamp,
+            "rx-token": self._state.rx_tokens["token"],
+            "rx-loginKey": self._state.rx_tokens["loginKey"],
+            "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
+            "rx-loginType": self._state.rx_tokens["loginType"],
+            "javax.faces.ViewState": self._state.view_state,
         }
         try:
             processed_events = []
-            soup = await self._fetch(
+            soup = await self._http.fetch(
                 month_url, method="POST", data=data, features="xml"
             )
             if (
@@ -271,14 +428,14 @@ class GakuenAPI:
                 )
                 and isinstance(
                     course_soup := soup.find(
-                        "update", {"id": f"funcForm:{self.j_idt}:content"}
+                        "update", {"id": f"funcForm:{j_idt}:content"}
                     ),
                     Tag,
                 )
             ):
                 course_dict = json.loads(course_soup.text.strip())
                 inner_soup = BeautifulSoup(update_tag.text, "html.parser")
-                await self._extract_session_tokens(inner_soup)
+                self._state.update_from_soup(inner_soup)
                 for event in course_dict["events"]:
                     event["title"] = event["title"].replace("\u3000", " ").strip()
                     if not event["title"]:
@@ -298,12 +455,12 @@ class GakuenAPI:
                         )
                         event["end"] = date(t_e.year, t_e.month, t_e.day)
                     if (
-                        event["title"] in self.class_list
+                        event["title"] in self._state.class_list
                     ):  # 授業名が一致するものがあれば
-                        event["teacher"] = self.class_list[event["title"]][
+                        event["teacher"] = self._state.class_list[event["title"]][
                             "lessonTeachers"
                         ]
-                        event["room"] = self.class_list[event["title"]]["lessonClass"]
+                        event["room"] = self._state.class_list[event["title"]]["lessonClass"]
                     processed_events.append(event)
             if not processed_events:
                 raise GakuenDataError(
@@ -333,15 +490,15 @@ class GakuenAPI:
                 - "from": 課題の出所（例: 教員名）
                 - "deadline": 課題の締切日時（datetimeオブジェクト）
         """
-        if not self._state["web_is_logged_in"]:
+        if not self._state.web_is_logged_in:
             raise GakuenPermissionError(
                 "Web ログインが必要です", error_code="NOT_LOGGED_IN"
             )
 
         try:
             soup = await self._to_home_page()
-            await self._extract_session_tokens(soup)
-            soup = soup.find("div", id=f"funcForm:{self.j_idt_kadai}")
+            self._state.update_from_soup(soup)
+            soup = soup.find("div", id=f"funcForm:{self._ids.kadai_tab_id}")
             if not isinstance(soup, Tag):
                 raise GakuenDataError(
                     "課題データの取得に失敗しました",
@@ -397,7 +554,7 @@ class GakuenAPI:
             }
         }
         try:
-            data = await self._fetch(
+            data = await self._http.fetch(
                 login_url, method="POST", _json=_json, response_type="json"
             )
             if not isinstance(data, dict):
@@ -405,8 +562,10 @@ class GakuenAPI:
                     "APIログインに失敗しました。サーバーからの応答が予想外でいま。",
                     error_code="API_LOGIN_FAILED",
                 )
-            self._state["api_is_logged_in"] = True
+            self._state.api_is_logged_in = True
             self.encrypted_login_password = data["data"]["encryptedPassword"]
+            # Fix 4: call firstSetting after login (required by the app flow)
+            self._state.first_setting = await self._call_first_setting()
             return data["data"]
         except Exception as e:
             if isinstance(e, GakuenAPIError):
@@ -425,7 +584,7 @@ class GakuenAPI:
         Returns:
             dict: ログアウト成功時のレスポンスデータ
         """
-        if not self._state["api_is_logged_in"]:
+        if not self._state.api_is_logged_in:
             raise GakuenPermissionError(
                 "Api ログインが必要です", error_code="NOT_LOGGED_IN"
             )
@@ -440,7 +599,7 @@ class GakuenAPI:
             "encryptedLoginPassword": self.encrypted_login_password,
         }
         try:
-            data = await self._fetch(
+            data = await self._http.fetch(
                 logout_url, method="POST", _json=_json, response_type="json"
             )
             if not isinstance(data, dict):
@@ -470,7 +629,7 @@ class GakuenAPI:
         Returns:
             dict: クラスデータの辞書。各授業はキーとして授業名を持ち、値は授業情報の辞書。
         """
-        if not self._state["api_is_logged_in"]:
+        if not self._state.api_is_logged_in:
             raise GakuenPermissionError(
                 "Api ログインが必要です", error_code="NOT_LOGGED_IN"
             )
@@ -491,7 +650,7 @@ class GakuenAPI:
             "subProductCd": "apa",
         }
         try:
-            data = await self._fetch(
+            data = await self._http.fetch(
                 class_url, method="POST", _json=_json, response_type="json"
             )
             if not isinstance(data, dict):
@@ -518,7 +677,7 @@ class GakuenAPI:
         Returns:
             dict: クラスデータ掲示データ
         """
-        if not self._state["api_is_logged_in"]:
+        if not self._state.api_is_logged_in:
             raise GakuenPermissionError(
                 "Api ログインが必要です", error_code="NOT_LOGGED_IN"
             )
@@ -536,7 +695,7 @@ class GakuenAPI:
             "data": class_data,
         }
         try:
-            data = await self._fetch(
+            data = await self._http.fetch(
                 class_info_url, method="POST", _json=_json, response_type="json"
             )
             if not isinstance(data, dict):
@@ -597,22 +756,25 @@ class GakuenAPI:
         try:
             await self._mobile_login()
             schedule_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50101.xhtml"
+            # Fix 2: use dynamically discovered IDs with fallbacks
+            cal = self._ids.calendar_id or "pmPage:funcForm:j_idt104"
+            acc_active = self._ids.accordion_active_id or "pmPage:funcForm:j_idt107_active"
             data = {
                 "javax.faces.partial.ajax": True,
-                "javax.faces.source": "pmPage:funcForm:j_idt104",
-                "javax.faces.partial.execute": "pmPage:funcForm:j_idt104",
+                "javax.faces.source": cal,
+                "javax.faces.partial.execute": cal,
                 "javax.faces.partial.render": "pmPage:funcForm:mainContent",
-                "pmPage:funcForm:j_idt104": "pmPage:funcForm:j_idt104",
+                cal: cal,
                 "pmPage:funcForm": "pmPage:funcForm",
-                "rx-token": self.rx["token"],
-                "rx-loginKey": self.rx["loginKey"],
-                "rx-deviceKbn": self.rx["deviceKbn"],
-                "rx-loginType": self.rx["loginType"],
-                "pmPage:funcForm:j_idt114_active": "0,1",
-                "javax.faces.ViewState": self.view_state,
+                "rx-token": self._state.rx_tokens["token"],
+                "rx-loginKey": self._state.rx_tokens["loginKey"],
+                "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
+                "rx-loginType": self._state.rx_tokens["loginType"],
+                acc_active: "0,1",
+                "javax.faces.ViewState": self._state.view_state,
                 "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
             }
-            soup = await self._fetch(
+            soup = await self._http.fetch(
                 schedule_url, method="POST", data=data, features="xml"
             )
             if (
@@ -628,7 +790,7 @@ class GakuenAPI:
                 )
             ):
                 inner_soup = BeautifulSoup(update_tag.text, "html.parser")
-                await self._extract_session_tokens(inner_soup)
+                self._state.update_from_soup(inner_soup)
                 content_soup = BeautifulSoup(main_content.text, "html.parser")
 
                 # 1. 日期信息
@@ -640,7 +802,7 @@ class GakuenAPI:
                         "day_of_week": raw_date.split("(")[1].rstrip(")"),
                     }
 
-                # 2. 终日活动 (全天事件)
+                # 2. 終日活動 (全天事件)
                 all_day_panel = content_soup.find("div", class_="syujitsuPanel")
                 if isinstance(all_day_panel, Tag):
                     all_day_events = all_day_panel.find_all("a", recursive=True)
@@ -655,7 +817,7 @@ class GakuenAPI:
                                 }
                             )
 
-                # 3. 课程信息 (时间表)
+                # 3. 課程情報 (時間表)
                 time_panel = None
                 for panel in content_soup.find_all("div", class_="ui-panel-m"):
                     header = panel.find("h3")
@@ -669,14 +831,14 @@ class GakuenAPI:
                     for item in class_items:
                         class_data = {}
 
-                        # 时间
+                        # 時間
                         time_header = item.find("div", class_="jugyoInfoArea")
                         if isinstance(time_header, Tag):
-                            # 去除时间信息中的span[@floatRight]标签
+                            # 時間情報中の span[@floatRight] タグを除去
                             if _fr := time_header.find("span", class_="floatRight"):
                                 _fr.extract()
                             class_data["time"] = time_header.text.strip()
-                            # 检查是否有教室变更标记
+                            # 教室変更マークを確認
                             if change_room_tag := time_header.find_all(
                                 "span", class_="signLesson"
                             ):
@@ -701,14 +863,14 @@ class GakuenAPI:
                             elif "19:40" in class_data["time"]:
                                 class_data["lesson_num"] = 7
 
-                        # 课程名称
+                        # 課程名称
                         class_name = item.find("span", class_="jugyoName")
                         if class_name:
                             class_data["name"] = class_name.text.strip().replace(
                                 "\u3000", " "
                             )
 
-                        # 教师
+                        # 教師
                         teachers = []
                         teacher_tags = item.find_all("a", class_="tantoKyoin")
                         if teacher_tags:
@@ -722,7 +884,7 @@ class GakuenAPI:
                         if isinstance(
                             class_details := item.find("div", class_="jknbtDtl"), Tag
                         ):
-                            # 获取常规教室信息（当前教室）
+                            # 通常教室情報を取得
                             room_divs = class_details.find_all("div", recursive=False)
                             for div in room_divs:
                                 if (
@@ -733,7 +895,7 @@ class GakuenAPI:
                                 ):
                                     class_data["room"] = div.text.strip()
 
-                            # 获取变更前教室
+                            # 変更前教室を取得
                             if isinstance(
                                 change_room_div := class_details.find(
                                     "div",
@@ -798,25 +960,28 @@ class GakuenAPI:
         try:
             await self._mobile_login()
             kadai_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50101.xhtml"
+            # Fix 2: use dynamically discovered IDs with fallbacks
+            acc_active = self._ids.accordion_active_id or "pmPage:funcForm:j_idt107_active"
+            kadai_link = self._ids.kadai_tab_link_id or "pmPage:funcForm:j_idt107:j_idt125"
             data = {
                 "pmPage:funcForm": "pmPage:funcForm",
-                "rx-token": self.rx["token"],
-                "rx-loginKey": self.rx["loginKey"],
-                "rx-deviceKbn": self.rx["deviceKbn"],
-                "rx-loginType": self.rx["loginType"],
-                "pmPage:funcForm:j_idt114_active": "0,1",
-                "javax.faces.ViewState": self.view_state,
+                "rx-token": self._state.rx_tokens["token"],
+                "rx-loginKey": self._state.rx_tokens["loginKey"],
+                "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
+                "rx-loginType": self._state.rx_tokens["loginType"],
+                acc_active: "0,1",
+                "javax.faces.ViewState": self._state.view_state,
                 "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
-                "rx.sync.source": "pmPage:funcForm:j_idt107:j_idt126",
-                "pmPage:funcForm:j_idt107:j_idt126": "pmPage:funcForm:j_idt107:j_idt126",
+                "rx.sync.source": kadai_link,
+                kadai_link: kadai_link,
             }
-            soup = await self._fetch(kadai_url, method="POST", data=data)
+            soup = await self._http.fetch(kadai_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
                 raise GakuenAPIError(
                     "ユーザーの課題データの取得に失敗しました",
                     error_code="USER_KADAI_FETCH_ERROR",
                 )
-            await self._extract_session_tokens(soup)
+            self._state.update_from_soup(soup)
             kadai_list = []
             main_content = soup.find("div", class_="mainContent")
             if not isinstance(main_content, Tag):
@@ -840,21 +1005,21 @@ class GakuenAPI:
                 kadai_info_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50102.xhtml"
                 data = {
                     "pmPage:funcForm": "pmPage:funcForm",
-                    "rx-token": self.rx["token"],
-                    "rx-loginKey": self.rx["loginKey"],
-                    "rx-deviceKbn": self.rx["deviceKbn"],
-                    "javax.faces.ViewState": self.view_state,
+                    "rx-token": self._state.rx_tokens["token"],
+                    "rx-loginKey": self._state.rx_tokens["loginKey"],
+                    "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
+                    "javax.faces.ViewState": self._state.view_state,
                     "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
                     "rx.sync.source": kaidai_id,
                     kaidai_id: kaidai_id,
                 }
-                soup = await self._fetch(kadai_info_url, method="POST", data=data)
+                soup = await self._http.fetch(kadai_info_url, method="POST", data=data)
                 if not isinstance(soup, BeautifulSoup):
                     logging.warning(
                         f"ユーザー: {self.user_id} の課題データの取得に失敗しました (ID: {kaidai_id} - {link.text}) (スキップします)"
                     )
                     continue
-                await self._extract_session_tokens(soup)
+                self._state.update_from_soup(soup)
                 # 授業インフォ
                 kadai_data = {}
                 kadai_data["id"] = kaidai_id
@@ -1024,10 +1189,10 @@ class GakuenAPI:
                 )
                 data = {
                     "pmPage:funcForm": "pmPage:funcForm",
-                    "rx-token": self.rx["token"],
-                    "rx-loginKey": self.rx["loginKey"],
-                    "rx-deviceKbn": self.rx["deviceKbn"],
-                    "javax.faces.ViewState": self.view_state,
+                    "rx-token": self._state.rx_tokens["token"],
+                    "rx-loginKey": self._state.rx_tokens["loginKey"],
+                    "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
+                    "javax.faces.ViewState": self._state.view_state,
                     "pmPage:funcForm:tstContent": "",
                     "pmPage:funcForm:tstComment": "",
                     "pmPage:funcForm:j_idt278:j_idt281": "",
@@ -1035,7 +1200,7 @@ class GakuenAPI:
                     "rx.sync.source": "pmPage:funcForm:j_idt278:j_idt281",
                 }
                 try:
-                    soup = await self._fetch(
+                    soup = await self._http.fetch(
                         back_kadai_list_url, method="POST", data=data
                     )
                 except GakuenAPIError as e:
@@ -1063,25 +1228,27 @@ class GakuenAPI:
                             await self._mobile_login()
                             # 課題一覧ページに戻る
                             kadai_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50101.xhtml"
+                            acc_active = self._ids.accordion_active_id or "pmPage:funcForm:j_idt107_active"
+                            kadai_link = self._ids.kadai_tab_link_id or "pmPage:funcForm:j_idt107:j_idt125"
                             data_relogin = {
                                 "pmPage:funcForm": "pmPage:funcForm",
-                                "rx-token": self.rx["token"],
-                                "rx-loginKey": self.rx["loginKey"],
-                                "rx-deviceKbn": self.rx["deviceKbn"],
-                                "rx-loginType": self.rx["loginType"],
-                                "pmPage:funcForm:j_idt114_active": "0,1",
-                                "javax.faces.ViewState": self.view_state,
+                                "rx-token": self._state.rx_tokens["token"],
+                                "rx-loginKey": self._state.rx_tokens["loginKey"],
+                                "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
+                                "rx-loginType": self._state.rx_tokens["loginType"],
+                                acc_active: "0,1",
+                                "javax.faces.ViewState": self._state.view_state,
                                 "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
-                                "rx.sync.source": "pmPage:funcForm:j_idt107:j_idt126",
-                                "pmPage:funcForm:j_idt107:j_idt126": "pmPage:funcForm:j_idt107:j_idt126",
+                                "rx.sync.source": kadai_link,
+                                kadai_link: kadai_link,
                             }
-                            soup_relogin = await self._fetch(kadai_url, method="POST", data=data_relogin)
+                            soup_relogin = await self._http.fetch(kadai_url, method="POST", data=data_relogin)
                             if not isinstance(soup_relogin, BeautifulSoup):
                                 raise GakuenAPIError(
                                     "再ログイン後の課題データの取得に失敗しました",
                                     error_code="USER_KADAI_FETCH_ERROR",
                                 )
-                            await self._extract_session_tokens(soup_relogin)
+                            self._state.update_from_soup(soup_relogin)
                             # 次の課題に進む
                             continue
                     else:
@@ -1093,7 +1260,7 @@ class GakuenAPI:
                         "ユーザーの課題一覧ページの取得に失敗しました",
                         error_code="USER_KADAI_LIST_FETCH_ERROR",
                     )
-                await self._extract_session_tokens(soup)
+                self._state.update_from_soup(soup)
             return kadai_list
         except Exception as e:
             if isinstance(e, GakuenAPIError):
@@ -1104,8 +1271,7 @@ class GakuenAPI:
             )
 
     async def _mobile_login(self) -> BeautifulSoup:
-        """モバイルログイン
-        `_extract_session_tokens` 必要でわない"""
+        """モバイルログイン"""
         if not self.user_id or not self.encrypted_login_password:
             raise GakuenPermissionError(
                 "ユーザーIDと暗号化されたパスワードが必要です",
@@ -1122,22 +1288,38 @@ class GakuenAPI:
             "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
         }
         try:
-            await self._fetch(login_url, method="GET")
-            soup = await self._fetch(to_index_url, method="POST", data=data)
+            # Reset mobile IDs for fresh extraction on each login
+            self._ids.calendar_id = None
+            self._ids.accordion_id = None
+            self._ids.kadai_tab_link_id = None
+            self._ids.menu_button_id = None
+
+            await self._http.fetch(login_url, method="GET")
+            soup = await self._http.fetch(to_index_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
                 raise GakuenAPIError(
                     "システムのホームページの取得に失敗しました",
                     error_code="HOME_PAGE_FETCH_ERROR",
                 )
-            await self._extract_session_tokens(soup)
-            if not self.rx:
+            self._state.update_from_soup(soup)
+            if not self._state.rx_tokens:
                 raise GakuenAPIError(
                     "セッション情報の抽出に失敗しました",
                     error_code="SESSION_EXTRACT_ERROR",
                 )
             if soup.find("span", class_="questTitle"):  # 重要アンケートがある場合
+                # Dynamically find the home navigation button in the questionnaire menu form
+                menu_form = soup.find("form", id="pmPage:menuForm")
+                if isinstance(menu_form, Tag):
+                    for inp in menu_form.find_all("input"):
+                        name = inp.get("name", "")
+                        if isinstance(name, str) and "menuBtnF" in name:
+                            self._ids.menu_button_id = name
+                            break
                 soup = await self._to_mobile_home_page()
-                await self._extract_session_tokens(soup)
+                self._state.update_from_soup(soup)
+            # Fix 2: dynamically extract mobile component IDs from login response
+            self._ids.extract_mobile_ids(soup)
             return soup
         except Exception as e:
             if isinstance(e, GakuenAPIError):
@@ -1152,16 +1334,16 @@ class GakuenAPI:
         home_url = f"{self.base_url}/uprx/up/bs/bsa001/Bsa00101.xhtml"
         data = {
             "headerForm": "headerForm",
-            "rx-token": self.rx["token"],
-            "rx-loginKey": self.rx["loginKey"],
-            "rx-deviceKbn": self.rx["deviceKbn"],
-            "rx-loginType": self.rx["loginType"],
+            "rx-token": self._state.rx_tokens["token"],
+            "rx-loginKey": self._state.rx_tokens["loginKey"],
+            "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
+            "rx-loginType": self._state.rx_tokens["loginType"],
             "headerForm:logo": "",
-            "javax.faces.ViewState": self.view_state,
+            "javax.faces.ViewState": self._state.view_state,
             "rx.sync.source": "headerForm:logo",
         }
         try:
-            soup = await self._fetch(home_url, method="POST", data=data)
+            soup = await self._http.fetch(home_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
                 raise GakuenAPIError(
                     "ホームページの取得に失敗しました",
@@ -1177,19 +1359,20 @@ class GakuenAPI:
     async def _to_mobile_home_page(self) -> BeautifulSoup:
         """モバイルホームページに移動"""
         mobile_home_url = f"{self.base_url}/uprx/up/bs/bsc505/Bsc50501.xhtml"
+        btn = self._ids.menu_button_id or "pmPage:menuForm:j_idt36:0:menuBtnF"
         data = {
             "pmPage:menuForm": "pmPage:menuForm",
-            "rx-token": self.rx["token"],
-            "rx-loginKey": self.rx["loginKey"],
-            "rx-deviceKbn": self.rx["deviceKbn"],
-            "rx-loginType": self.rx["loginType"],
-            "pmPage:menuForm:j_idt36:0:menuBtnF": "",
-            "javax.faces.ViewState": self.view_state,
+            "rx-token": self._state.rx_tokens["token"],
+            "rx-loginKey": self._state.rx_tokens["loginKey"],
+            "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
+            "rx-loginType": self._state.rx_tokens["loginType"],
+            btn: "",
+            "javax.faces.ViewState": self._state.view_state,
             "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",
-            "rx.sync.source": "pmPage:menuForm:j_idt36:0:menuBtnF",
+            "rx.sync.source": btn,
         }
         try:
-            soup = await self._fetch(mobile_home_url, method="POST", data=data)
+            soup = await self._http.fetch(mobile_home_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
                 raise GakuenAPIError(
                     "モバイルホームページの取得に失敗しました",
@@ -1268,7 +1451,7 @@ class GakuenAPI:
                 }
             except Exception as e:
                 # 個別のレッスン解析エラーはログに記録するが、処理は続行
-                logging.warning(f"レッスン情報抽出エラー: {str(e)}")  # または適切なロガーを使用
+                logging.warning(f"レッスン情報抽出エラー: {str(e)}")
                 return None
 
         def __extract_classroom_info(lesson_detail: Tag, span_text: str) -> str:
@@ -1293,19 +1476,19 @@ class GakuenAPI:
             """クラス詳細情報を解析"""
             for lesson_main in soup.find_all("div", class_="lessonMain"):
                 lesson_data = __extract_lesson_info(lesson_main)
-                if lesson_data and lesson_data["title"] not in self.class_list:
-                    self.class_list[lesson_data["title"]] = {
+                if lesson_data and lesson_data["title"] not in self._state.class_list:
+                    self._state.class_list[lesson_data["title"]] = {
                         "lessonTeachers": lesson_data["teachers"],
                         "lessonClass": lesson_data["classroom"],
                     }
 
         def __attach_tags_to_classes(class_tags: list) -> None:
             """タグ情報をクラスデータに追加"""
-            course_keys = list(self.class_list.keys())
+            course_keys = list(self._state.class_list.keys())
             for tag_data, index in class_tags:
                 if index < len(course_keys):
                     course_name = course_keys[index]
-                    self.class_list[course_name].setdefault("tags", []).append(tag_data)
+                    self._state.class_list[course_name].setdefault("tags", []).append(tag_data)
 
         # クラスタグを取得
         class_tags = __extract_class_tags(soup)
@@ -1316,122 +1499,25 @@ class GakuenAPI:
         # タグ情報をクラスデータに追加
         __attach_tags_to_classes(class_tags)
 
-    async def _fetch(
-        self,
-        url: str,
-        method: Literal["GET", "POST"] = "POST",
-        data: Optional[dict] = None,
-        _json: Optional[dict] = None,
-        response_type: Literal["json", "soup"] = "soup",
-        features: Optional[str] = "html.parser",
-    ) -> Optional[Union[BeautifulSoup, dict]]:
-        """指定されたURLからデータを取得し、BeautifulSoup と Json オブジェクトを返す
-
-        Args:
-            url: 取得するURL
-            method: HTTPメソッド
-            data: POSTリクエスト用のデータ（dict形式）
-            json: JSONリクエスト用のデータ（dict形式）
-            response_type: レスポンスの形式（"json" または "soup"）
-            features: BeautifulSoupの解析機能（デフォルトは "html.parser"）
+    async def _call_first_setting(self) -> dict:
+        """firstSetting API を呼び出す (api_login 後に必須)
 
         Returns:
-            BeautifulSoup または dict: 取得したデータを解析した結果
+            dict: firstSetting のレスポンスデータ（失敗時は空辞書）
         """
-        _error = False
-        try:
-            async with self.session.request(
-                method, url, data=data, json=_json, proxy=self.http_proxy
-            ) as response:
-                if response.status != 200:
-                    if response_type == "json":
-                        _error = True
-                    else:
-                        raise GakuenNetworkError(
-                            f"HTTPエラー: {response.reason}",
-                            error_code="HTTP_ERROR",
-                            status_code=response.status,
-                        )
-                html = await response.text()
-                if response_type == "json":
-                    if "innerInfo" in html:
-                        soup = BeautifulSoup(html, "html.parser")
-                        if error_msg := soup.find("p", class_="innerInfo"):
-                            raise GakuenAPIError(
-                                f"APIエラー: {error_msg.text}",
-                                error_code="API_ERROR",
-                            )
-                    try:
-                        out_json = json.loads(
-                            urllib.parse.unquote(html)
-                            .replace("\u3000", " ")
-                            .replace("+", " ")
-                        )
-                        if _error:
-                            raise GakuenAPIError(
-                                f"APIレスポンスが不正です: {''.join(out_json['statusDto']['messageList'])}",
-                                error_code="INVALID_API_RESPONSE",
-                            )
-                    except json.JSONDecodeError as e:
-                        raise GakuenAPIError(
-                            f"JSONデコードエラー: {str(e)}",
-                            error_code="JSON_DECODE_ERROR",
-                        )
-                    return out_json
-                return BeautifulSoup(html, features)
-        except aiohttp.ClientError as e:
-            raise GakuenNetworkError(
-                f"ネットワークエラー: {str(e)}",
-                error_code="NETWORK_ERROR",
-            ) from e
-
-    async def _extract_session_tokens(self, soup: BeautifulSoup) -> None:
-        """セッショントークンを抽出"""
-        token_mapping = {
-            "rx-token": "token",
-            "rx-loginKey": "loginKey",
-            "rx-deviceKbn": "deviceKbn",
-            "rx-loginType": "loginType",
+        url = f"{self.base_url}/uprx/webapi/up/ap/Apa001Resource/firstSetting"
+        _json = {
+            "productCd": "ap",
+            "subProductCd": "apa",
+            "loginUserId": self.user_id,
+            "encryptedLoginPassword": self.encrypted_login_password,
+            "langCd": "",
+            "data": {},
         }
-
-        for input_tag in soup.find_all("input"):
-            if not isinstance(input_tag, Tag):
-                continue
-            name = input_tag.get("name")
-            value = input_tag.get("value")
-
-            if isinstance(name, str) and name in token_mapping:
-                self.rx[token_mapping[name]] = value
-            elif name == "javax.faces.ViewState":
-                if isinstance(value, str):
-                    self.view_state = value
-
-    async def _extract_javascript_ids(self, soup: BeautifulSoup) -> None:
-        """JavaScript IDを抽出"""
         try:
-            # j_idtの抽出
-            script_tags = soup.find_all("script", type="text/javascript")
-            if (
-                script_tags
-                and len(script_tags) > 34
-                and isinstance(s_tag := script_tags[34], Tag)
-                and isinstance(s_id := s_tag.get("id"), str)
-            ):
-                self.j_idt = s_id.split(":")[1]
-
-            # j_idt_kadaiの抽出
-            portal_support = soup.find("ul", role="tablist")
-            if (
-                isinstance(portal_support, Tag)
-                and (a := portal_support.find_all("a"))
-                and len(a) > 1
-                and isinstance(b := a[-1], Tag)
-                and isinstance(href := b.get("href"), str)
-            ):
-                self.j_idt_kadai = href.lstrip("#funcForm:")
-
-        except (AttributeError, IndexError) as e:
-            raise GakuenDataError(
-                f"JavaScript ID抽出エラー: {str(e)}",
-                error_code="JS_ID_EXTRACTION_ERROR",
+            data = await self._http.fetch(
+                url, method="POST", _json=_json, response_type="json"
             )
+            return data.get("data", {}) if isinstance(data, dict) else {}
+        except GakuenAPIError:
+            return {}
