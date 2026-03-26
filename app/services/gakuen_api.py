@@ -1320,6 +1320,18 @@ class GakuenAPI:
                 )
             self._state.update_from_soup(soup)
             if not self._state.rx_tokens:
+                error_span = soup.find("span", class_="ui-messages-error-detail")
+                page_title = getattr(soup.find("title"), "text", "unknown")
+                auth_err = error_span.text.strip() if error_span else None
+                logging.warning(
+                    f"[mobile_login] user={self.user_id} "
+                    f"page_title={page_title!r} auth_err={auth_err!r}"
+                )
+                if auth_err:
+                    raise GakuenLoginError(
+                        f"モバイルログイン認証エラー: {auth_err}",
+                        error_code="MOBILE_LOGIN_AUTH_ERROR",
+                    )
                 raise GakuenAPIError(
                     "セッション情報の抽出に失敗しました",
                     error_code="SESSION_EXTRACT_ERROR",
