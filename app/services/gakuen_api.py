@@ -115,6 +115,7 @@ class _HttpClient:
         method: Literal["GET", "POST"] = "POST",
         data: Optional[dict] = None,
         _json: Optional[dict] = None,
+        params: Optional[dict] = None,
         response_type: Literal["json", "soup"] = "soup",
         features: Optional[str] = "html.parser",
     ) -> Optional[Union[BeautifulSoup, dict]]:
@@ -122,7 +123,7 @@ class _HttpClient:
         _error = False
         try:
             async with self.session.request(
-                method, url, data=data, json=_json, proxy=self.http_proxy
+                method, url, data=data, json=_json, params=params, proxy=self.http_proxy
             ) as response:
                 if response.status != 200:
                     if response_type == "json":
@@ -1298,7 +1299,16 @@ class GakuenAPI:
                 "ユーザーIDと暗号化されたパスワードが必要です",
                 error_code="MISSING_USER_ID_OR_PASSWORD",
             )
-        login_url = self._build_mobile_login_url()
+        # Build webApiLoginInfo as a dict and let aiohttp handle encoding
+        web_api_login_info = {
+            "password": "",
+            "autoLoginAuthCd": "",
+            "encryptedPassword": self.encrypted_login_password.replace(" ", "+"),
+            "userId": self.user_id,
+            "parameterMap": "",
+        }
+        login_url = f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml"
+        params = {"webApiLoginInfo": json.dumps(web_api_login_info)}
         to_index_url = f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml"
         data = {
             "pmPage:loginForm": "pmPage:loginForm",
@@ -1315,7 +1325,7 @@ class GakuenAPI:
             self._ids.kadai_tab_link_id = None
             self._ids.menu_button_id = None
 
-            await self._http.fetch(login_url, method="GET")
+            await self._http.fetch(login_url, method="GET", params=params)
             soup = await self._http.fetch(to_index_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
                 raise GakuenAPIError(
