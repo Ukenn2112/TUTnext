@@ -1180,9 +1180,7 @@ class GakuenAPI:
                         ):
                             kadai_data["minLength"] = min_length[0].text.strip()
                             kadai_data["maxLength"] = min_length[1].text.strip()
-                    kadai_data["url"] = (
-                        f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml?webApiLoginInfo=%7B%22password%22%3A%22%22%2C%22autoLoginAuthCd%22%3A%22%22%2C%22encryptedPassword%22%3A%22{self.encrypted_login_password}%22%2C%22userId%22%3A%22{self.user_id}%22%2C%22parameterMap%22%3A%22%22%7D"
-                    )
+                    kadai_data["url"] = self._build_mobile_login_url()
                     kadai_list.append(kadai_data)
                 back_kadai_list_url = (
                     f"{self.base_url}/uprx/up/jg/jga505/Jga50503.xhtml"
@@ -1270,6 +1268,25 @@ class GakuenAPI:
                 error_code="UNEXPECTED_USER_KADAI_ERROR",
             )
 
+    def _build_mobile_login_url(self) -> str:
+        """モバイルログイン URL を構築する
+        encryptedPassword の base64 + 記号を %2B に正しくエンコードする。
+        api_login 経由で取得した場合は replace("+", " ") で汚染されているため、
+        先にスペースを + に戻してから urllib.parse.quote で % エンコードする。
+        """
+        enc = urllib.parse.quote(
+            (self.encrypted_login_password or "").replace(" ", "+"),
+            safe="",
+        )
+        uid = urllib.parse.quote(self.user_id or "", safe="")
+        return (
+            f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml"
+            f"?webApiLoginInfo=%7B%22password%22%3A%22%22%2C%22autoLoginAuthCd%22%3A%22%22"
+            f"%2C%22encryptedPassword%22%3A%22{enc}%22"
+            f"%2C%22userId%22%3A%22{uid}%22"
+            f"%2C%22parameterMap%22%3A%22%22%7D"
+        )
+
     async def _mobile_login(self) -> BeautifulSoup:
         """モバイルログイン"""
         if not self.user_id or not self.encrypted_login_password:
@@ -1277,7 +1294,7 @@ class GakuenAPI:
                 "ユーザーIDと暗号化されたパスワードが必要です",
                 error_code="MISSING_USER_ID_OR_PASSWORD",
             )
-        login_url = f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml?webApiLoginInfo=%7B%22password%22%3A%22%22%2C%22autoLoginAuthCd%22%3A%22%22%2C%22encryptedPassword%22%3A%22{self.encrypted_login_password}%22%2C%22userId%22%3A%22{self.user_id}%22%2C%22parameterMap%22%3A%22%22%7D"
+        login_url = self._build_mobile_login_url()
         to_index_url = f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml"
         data = {
             "pmPage:loginForm": "pmPage:loginForm",
