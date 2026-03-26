@@ -1274,9 +1274,13 @@ class GakuenAPI:
         api_login 経由で取得した場合は replace("+", " ") で汚染されているため、
         先にスペースを + に戻してから urllib.parse.quote で % エンコードする。
         """
-        enc = urllib.parse.quote(
-            (self.encrypted_login_password or "").replace(" ", "+"),
-            safe="",
+        raw = self.encrypted_login_password or ""
+        restored = raw.replace(" ", "+")
+        enc = urllib.parse.quote(restored, safe="")
+        logging.warning(
+            f"[_build_mobile_login_url] user={self.user_id} "
+            f"raw_len={len(raw)} spaces={raw.count(' ')} plus_signs={raw.count('+')} "
+            f"restored_plus={restored.count('+')} enc_prefix={enc[:40]!r}"
         )
         uid = urllib.parse.quote(self.user_id or "", safe="")
         return (
