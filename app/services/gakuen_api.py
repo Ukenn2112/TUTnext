@@ -1300,17 +1300,17 @@ class GakuenAPI:
                 error_code="MISSING_USER_ID_OR_PASSWORD",
             )
         # Build webApiLoginInfo as a dict and let aiohttp handle encoding
-        logging.warning(f"[_mobile_login] raw encrypted_login_password: {self.encrypted_login_password!r}")
+        # encrypted_login_password from api_login is already URL-encoded, so decode it first
+        decoded_password = urllib.parse.unquote(self.encrypted_login_password.replace(" ", "+"))
         web_api_login_info = {
             "password": "",
             "autoLoginAuthCd": "",
-            "encryptedPassword": self.encrypted_login_password.replace(" ", "+"),
+            "encryptedPassword": decoded_password,
             "userId": self.user_id,
             "parameterMap": "",
         }
         login_url = f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml"
         params = {"webApiLoginInfo": json.dumps(web_api_login_info)}
-        logging.warning(f"[_mobile_login] webApiLoginInfo json: {params['webApiLoginInfo'][:100]}...")
         to_index_url = f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml"
         data = {
             "pmPage:loginForm": "pmPage:loginForm",
@@ -1327,11 +1327,6 @@ class GakuenAPI:
             self._ids.kadai_tab_link_id = None
             self._ids.menu_button_id = None
 
-            # Debug: log the actual URL that will be requested
-            import yarl
-            actual_url = yarl.URL(login_url).with_query(params)
-            logging.warning(f"[_mobile_login] requesting URL: {actual_url}")
-            
             await self._http.fetch(login_url, method="GET", params=params)
             soup = await self._http.fetch(to_index_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
