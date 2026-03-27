@@ -1271,18 +1271,14 @@ class GakuenAPI:
 
     def _build_mobile_login_url(self) -> str:
         """モバイルログイン URL を構築する
-        encryptedPassword の base64 + 記号を %2B に正しくエンコードする。
-        api_login 経由で取得した場合は replace("+", " ") で汚染されているため、
-        先にスペースを + に戻してから urllib.parse.quote で % エンコードする。
+        encryptedPassword は api_login 経由で取得した場合、すでに URL エンコード済み。
+        そのまま使うとダブルエンコードになるため、一度デコードしてから再エンコードする。
         """
         raw = self.encrypted_login_password or ""
-        restored = raw.replace(" ", "+")
-        enc = urllib.parse.quote(restored, safe="")
-        logging.warning(
-            f"[_build_mobile_login_url] user={self.user_id} "
-            f"raw_len={len(raw)} spaces={raw.count(' ')} plus_signs={raw.count('+')} "
-            f"restored_plus={restored.count('+')} enc_prefix={enc[:40]!r}"
-        )
+        # api_login から取得した encryptedPassword は既に URL エンコード済み
+        # 一度デコードしてから再エンコードすることで正しい値にする
+        decoded = urllib.parse.unquote(raw.replace(" ", "+"))
+        enc = urllib.parse.quote(decoded, safe="")
         uid = urllib.parse.quote(self.user_id or "", safe="")
         return (
             f"{self.base_url}/uprx/up/pk/pky501/Pky50101.xhtml"
