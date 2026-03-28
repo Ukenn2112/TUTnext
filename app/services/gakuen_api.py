@@ -406,7 +406,7 @@ class GakuenAPI:
         month_url = f"{self.base_url}/uprx/up/bs/bsa001/Bsa00101.xhtml"
         j_idt = self._ids.schedule_component_id
         data = {
-            "javax.faces.partial.ajax": True,
+            "javax.faces.partial.ajax": "true",
             f"javax.faces.partial.render": f"funcForm:{j_idt}:content",
             f"funcForm:{j_idt}:content": f"funcForm:{j_idt}:content",
             f"funcForm:{j_idt}:content_start": month_timestamp,
@@ -715,12 +715,14 @@ class GakuenAPI:
         self,
         user_id: Optional[str] = None,
         encrypted_login_password: Optional[str] = None,
+        target_date: Optional[date] = None,
     ) -> dict:
         """後日ユーザースケジュール取得 (encrypted_login_passwordが必要) Student Only
 
         Args:
             user_id: ユーザーID（学籍番号）
             encrypted_login_password: 暗号化されたログインパスワード
+            target_date: 取得する日付（省略時は翌日）
 
         Raises:
             GakuenPermissionError: ユーザーIDと暗号化されたパスワードが必要な場合
@@ -754,23 +756,27 @@ class GakuenAPI:
             self.user_id = user_id
         if encrypted_login_password:
             self.encrypted_login_password = encrypted_login_password
+        if target_date is None:
+            target_date = date.today() + timedelta(days=1)
+        target_date_str = target_date.strftime("%Y/%m/%d")
         try:
             await self._mobile_login()
             schedule_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50101.xhtml"
-            # Fix 2: use dynamically discovered IDs with fallbacks
             cal = self._ids.calendar_id or "pmPage:funcForm:j_idt104"
             acc_active = self._ids.accordion_active_id or "pmPage:funcForm:j_idt107_active"
             data = {
-                "javax.faces.partial.ajax": True,
+                "javax.faces.partial.ajax": "true",
                 "javax.faces.source": cal,
                 "javax.faces.partial.execute": cal,
                 "javax.faces.partial.render": "pmPage:funcForm:mainContent",
-                cal: cal,
+                "javax.faces.behavior.event": "dateSelect",
+                "javax.faces.partial.event": "dateSelect",
                 "pmPage:funcForm": "pmPage:funcForm",
                 "rx-token": self._state.rx_tokens["token"],
                 "rx-loginKey": self._state.rx_tokens["loginKey"],
                 "rx-deviceKbn": self._state.rx_tokens["deviceKbn"],
                 "rx-loginType": self._state.rx_tokens["loginType"],
+                f"{cal}_input": target_date_str,
                 acc_active: "0,1",
                 "javax.faces.ViewState": self._state.view_state,
                 "javax.faces.RenderKitId": "PRIMEFACES_MOBILE",

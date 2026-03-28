@@ -5,7 +5,7 @@ import logging
 import sys
 import aiohttp
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from app.services.gakuen_api import GakuenAPI, GakuenAPIError
 from push_server.push_pool import PushPoolManager
 from app.database import db_manager
@@ -128,13 +128,6 @@ async def monitor_task(
                         deviceToken,
                         {"updateType": "kaidaiNumChange", "num": len(kadai_list)},
                     )
-                    await push_manager.add_message_to_pool(
-                        "realtime",
-                        deviceToken,
-                        "新しい課題が追加されました",
-                        "詳しくはこのメッセージをタップしてください",
-                        data={"toPage": "assignment"},
-                    )
                 elif old_kadai_count > len(kadai_list):  # 课题数量减少
                     # 更新Redis中的课题数量，并推送后台消息
                     await redis.set(f"kadai_count:{username}", len(kadai_list))
@@ -153,44 +146,12 @@ async def monitor_task(
                         deviceToken,
                         {"updateType": "kaidaiNumChange", "num": len(kadai_list)},
                     )
-                    await push_manager.add_message_to_pool(
-                        "realtime",
-                        deviceToken,
-                        "新しい課題が追加されました",
-                        "詳しくはこのメッセージをタップしてください",
-                        data={"toPage": "assignment"},
-                    )
             if not kadai_list:
                 logging.info(f"用户 {username} 没有课题")
                 return
             await redis.set(
                 f"{username}:kadai", json.dumps(kadai_list), ex=180
             )  # 缓存用户课题
-            now_time = datetime.now(JAPAN_TZ)
-            for kadai in kadai_list:
-                naive_due_time = datetime.strptime(
-                    f"{kadai['dueDate']} {kadai['dueTime']}", "%Y-%m-%d %H:%M"
-                )
-                kadai_due_time = JAPAN_TZ.localize(naive_due_time)
-                if timedelta(0) < (kadai_due_time - now_time) < timedelta(hours=1):
-                    # 生成唯一的课题标识符
-                    kadai_id = f"{username}:{kadai['courseId']}:{kadai['title']}{kadai.get('description', '')}"
-                    # 检查是否已经推送过这个课题
-                    if await redis.exists(f"kadai_notification:{kadai_id}"):
-                        logging.info(f"课题 {kadai_id} 已经发送过通知，跳过")
-                        continue
-                    await push_manager.add_message_to_pool(
-                        "realtime",
-                        deviceToken,
-                        "【注意】課題の締切が近づいています！",
-                        f"授業「{kadai['courseName']}」の課題の締切が近づいています！\n締め切り: {kadai['dueDate']} {kadai['dueTime']}",
-                        interruption_level="time-sensitive",
-                        data={"toPage": "assignment"},
-                    )
-                    # 将课题标识符存储到Redis，设置过期时间为1小时
-                    await redis.setex(
-                        f"kadai_notification:{kadai_id}", 3600, "notified"
-                    )
             logging.info(f"用户 {username} 的课题监测任务已完成")
         except Exception as e:
             logging.error(f"处理用户 {username} 时出错: {e}")
