@@ -51,16 +51,19 @@ class GoogleClassroomAPI:
             return None
     
     async def _check_token_validity(self, access_token: str) -> bool:
-        """检查访问令牌是否有效"""
+        """检查访问令牌是否有效（token 过期返回 400 属正常情况，不记录为错误）"""
         async with aiohttp.ClientSession() as session:
             url = f"{self.token_info_url}?access_token={access_token}"
-            response = await self._make_request(session, "GET", url)
-            
-            if response and "error" not in response:
-                # 检查令牌是否还有足够的有效时间（至少5分钟）
-                expires_in = response.get("expires_in", 0)
-                return int(expires_in) > 300  # 5分钟
-            return False
+            try:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        return False
+                    data = await response.json()
+                    expires_in = data.get("expires_in", 0)
+                    return int(expires_in) > 300  # 5分钟
+            except Exception as e:
+                logging.error(f"Token validity check error: {e}")
+                return False
     
     async def _refresh_access_token(self, username: str, refresh_token: str) -> Optional[str]:
         """刷新访问令牌"""
