@@ -148,15 +148,14 @@ async def run_all():
     # 设置信号处理
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
+    # 仅存储 scheduler 任务，信号到来时只取消这些，让 uvicorn 通过 should_exit 优雅退出
+    scheduler_tasks: list[asyncio.Task] = []
 
     def signal_handler():
         logger.info("收到停止信号，正在关闭...")
         stop_event.set()
-        # 取消所有任务以中断长时 sleep，让 TaskGroup 能正常退出
-        current = asyncio.current_task()
-        for task in asyncio.all_tasks(loop):
-            if task is not current:
-                task.cancel()
+        for task in scheduler_tasks:
+            task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
@@ -167,20 +166,20 @@ async def run_all():
 
     try:
         async with asyncio.TaskGroup() as tg:
-            # API 服务器
+            # API 服务器（通过 stop_event → should_exit 优雅退出，不直接取消）
             tg.create_task(start_api_server(stop_event))
             # 每日推送任务 (8:30 PM JST)
             if settings.enable_daily_push:
-                tg.create_task(schedule_daily_push(push_manager))
+                scheduler_tasks.append(tg.create_task(schedule_daily_push(push_manager)))
             else:
                 logger.info("每日晚间推送已禁用 (ENABLE_DAILY_PUSH=false)")
             # 监测任务 (每5分钟)
             if settings.enable_monitor_push:
-                tg.create_task(schedule_monitor_task(push_manager))
+                scheduler_tasks.append(tg.create_task(schedule_monitor_task(push_manager)))
             else:
                 logger.info("课题监测推送已禁用 (ENABLE_MONITOR_PUSH=false)")
             # 巴士时刻表自动更新 (启动时 + 每周一 3:00 JST)
-            tg.create_task(schedule_bus_scraper())
+            scheduler_tasks.append(tg.create_task(schedule_bus_scraper()))
     except* (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("程序被用户中断")
     except* Exception as eg:
