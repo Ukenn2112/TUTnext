@@ -1,0 +1,60 @@
+[project]
+name = "tutnext"
+version = "0.1.0"
+description = "TUTnext - Tama University schedule management and notification backend"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "aiohttp>=3.10.0",
+    "asyncpg>=0.30.0",
+    "icalendar>=6.0.0",
+    "lxml>=5.0.0",
+    "beautifulsoup4>=4.12.0",
+    "redis>=5.0.0",
+    "aioapns>=3.0",
+    "pytz>=2024.1",
+    "PyJWT>=2.9.0",
+    "cryptography>=43.0.0",
+    "python-dotenv>=1.0.0",
+    "pdfplumber>=0.11.0",
+    "pydantic-settings>=2.5.0",
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+tutnext = "tutnext.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tutnext"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+    "fakeredis>=2.25.0",
+    "aioresponses>=0.7.6",
+    "httpx>=0.27.0",
+    "types-pytz>=2026.1.1.20260304",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-m 'not integration'"
+markers = [
+    "integration: marks tests as integration tests (run with '-m integration')",
+]

@@ -1,9 +1,19 @@
 next.log
+*.log.*
 *.db*
 .DS_Store
 __pycache__
 test_*.py
 *.p8
-tmail.py
 .env
 data/
+
+# uv / Python
+.venv/
+.python-version
+dist/
+*.egg-info/
+uv.lock
+
+.claude/
+.pytest_cache/
