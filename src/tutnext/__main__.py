@@ -20,7 +20,7 @@ from tutnext.config import JAPAN_TZ, settings
 logger = logging.getLogger(__name__)
 
 
-async def start_api_server():
+async def start_api_server(stop_event: asyncio.Event):
     """启动 FastAPI/Uvicorn API 服务器"""
     config = uvicorn.Config(
         "tutnext.api.app:app",
@@ -30,7 +30,18 @@ async def start_api_server():
         log_level="info",
     )
     server = uvicorn.Server(config)
-    await server.serve()
+    # 由父级统一管理信号，避免 uvicorn 重复安装 handler 导致信号触发两次
+    server.install_signal_handlers = lambda: None
+
+    async def _watch_stop():
+        await stop_event.wait()
+        server.should_exit = True
+
+    watcher = asyncio.ensure_future(_watch_stop())
+    try:
+        await server.serve()
+    finally:
+        watcher.cancel()
 
 
 async def schedule_daily_push(push_manager):
@@ -141,6 +152,11 @@ async def run_all():
     def signal_handler():
         logger.info("收到停止信号，正在关闭...")
         stop_event.set()
+        # 取消所有任务以中断长时 sleep，让 TaskGroup 能正常退出
+        current = asyncio.current_task()
+        for task in asyncio.all_tasks(loop):
+            if task is not current:
+                task.cancel()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
@@ -152,7 +168,7 @@ async def run_all():
     try:
         async with asyncio.TaskGroup() as tg:
             # API 服务器
-            tg.create_task(start_api_server())
+            tg.create_task(start_api_server(stop_event))
             # 每日推送任务 (8:30 PM JST)
             if settings.enable_daily_push:
                 tg.create_task(schedule_daily_push(push_manager))
@@ -165,7 +181,7 @@ async def run_all():
                 logger.info("课题监测推送已禁用 (ENABLE_MONITOR_PUSH=false)")
             # 巴士时刻表自动更新 (启动时 + 每周一 3:00 JST)
             tg.create_task(schedule_bus_scraper())
-    except* KeyboardInterrupt:
+    except* (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("程序被用户中断")
     except* Exception as eg:
         for exc in eg.exceptions:
