@@ -23,8 +23,9 @@ MonitorService — 限速版用户作业监测服务
 import asyncio
 import json
 import logging
+from datetime import datetime
 
-from tutnext.config import settings, redis, HTTP_PROXY
+from tutnext.config import settings, redis, HTTP_PROXY, JAPAN_TZ
 from tutnext.core.database import db_manager
 from tutnext.services.gakuen.client import GakuenAPI
 from tutnext.services.gakuen.errors import GakuenPermissionError
@@ -272,6 +273,11 @@ class MonitorService:
         """等待指定时间后执行用户检查（Layer 4 的时间分散实现）。"""
         if delay > 0:
             await asyncio.sleep(delay)
+        # Layer 2: 若等待后已进入静默时段，跳过本次检查
+        now = datetime.now(JAPAN_TZ)
+        if 3 <= now.hour < 6 or (now.hour == 6 and now.minute < 10):
+            logger.debug(f"静默时段，跳过用户 {user['username']} 的检查")
+            return
         try:
             await self.check_single_user(
                 user["username"],
