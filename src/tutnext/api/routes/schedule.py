@@ -3,13 +3,22 @@ import logging
 import traceback
 
 from icalendar import Alarm, Calendar, Event
-from fastapi import APIRouter, HTTPException, Response
-from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, HTTPException, Response, status as http_status
+from datetime import date, datetime, timedelta, timezone
+from typing import Optional
+
+from pydantic import BaseModel
 
 from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.config import HTTP_PROXY, redis
 
 router = APIRouter()
+
+
+class LaterScheduleRequest(BaseModel):
+    username: str
+    encryptedPassword: str
+    targetDate: Optional[str] = None  # YYYY-MM-DD 格式，省略时默认为明天
 
 
 @router.get("")
@@ -109,5 +118,42 @@ async def send_schedule(username=None, password=None):
         logging.error(f"[{username}] error: {e}")
         logging.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        await gakuen.close()
+
+
+@router.post("/later")
+async def get_later_schedule(data: LaterScheduleRequest, response: Response):
+    username = data.username
+    encryptedPassword = data.encryptedPassword
+
+    target_date: Optional[date] = None
+    if data.targetDate:
+        try:
+            target_date = date.fromisoformat(data.targetDate)
+        except ValueError:
+            response.status_code = http_status.HTTP_400_BAD_REQUEST
+            return {"status": False, "message": "targetDate の形式が無効です。YYYY-MM-DD 形式で指定してください。"}
+
+    gakuen = GakuenAPI(
+        username, "", "https://next.tama.ac.jp", encryptedPassword, http_proxy=HTTP_PROXY
+    )
+    try:
+        result = await gakuen.get_later_user_schedule(
+            user_id=username,
+            encrypted_login_password=encryptedPassword,
+            target_date=target_date,
+        )
+        response.status_code = http_status.HTTP_200_OK
+        return {"status": True, "data": result}
+    except GakuenAPIError as e:
+        logging.warning(f"[{username}] get_later_schedule error: {e}")
+        response.status_code = http_status.HTTP_500_INTERNAL_SERVER_ERROR
+        return {"status": False, "message": str(e)}
+    except Exception as e:
+        logging.error(f"[{username}] get_later_schedule error: {e}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        response.status_code = http_status.HTTP_500_INTERNAL_SERVER_ERROR
+        return {"status": False, "message": str(e)}
     finally:
         await gakuen.close()

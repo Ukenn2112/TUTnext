@@ -34,6 +34,7 @@ def _load_bus_data() -> dict:
     if _bus_data_cache is None:
         logger.info("从磁盘加载 bus_data.json 到内存缓存")
         _bus_data_cache = json.loads(_BUS_DATA_PATH.read_text(encoding="utf-8"))
+    assert _bus_data_cache is not None
     return _bus_data_cache
 
 
@@ -42,6 +43,7 @@ def reload_bus_data() -> dict:
     global _bus_data_cache
     logger.info("重新加载 bus_data.json 到内存缓存")
     _bus_data_cache = json.loads(_BUS_DATA_PATH.read_text(encoding="utf-8"))
+    assert _bus_data_cache is not None
     return _bus_data_cache
 
 
@@ -287,17 +289,16 @@ async def app_schedule():
                         day = int(match.group(3))
                         date_range = [datetime(year, month, day).strftime("%Y年%m月%d日")]
 
+                    href = str(web_data.get("href") or "")
                     if today_ja in date_range:
                         pin_messages = {
                             "title": "本日はスクールバス臨時ダイヤらしいです",
-                            "url": "https://www.tama.ac.jp/guide/campus/"
-                            + web_data.get("href"),
+                            "url": "https://www.tama.ac.jp/guide/campus/" + href,
                         }
                     _messages.append(
                         {
                             "title": title,
-                            "url": "https://www.tama.ac.jp/guide/campus/"
-                            + web_data.get("href"),
+                            "url": "https://www.tama.ac.jp/guide/campus/" + href,
                         }
                     )
 
