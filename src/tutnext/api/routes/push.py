@@ -1,15 +1,15 @@
 # tutnext/api/routes/push.py
 from fastapi import APIRouter, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tutnext.core.database import db_manager
 
 router = APIRouter()
 
 
 class PushRegistration(BaseModel):
-    username: str
-    encryptedPassword: str
-    deviceToken: str
+    username: str = Field(min_length=1)
+    encryptedPassword: str = Field(min_length=1)
+    deviceToken: str = Field(min_length=1)
 
 
 class PushUnregister(BaseModel):

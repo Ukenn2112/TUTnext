@@ -27,6 +27,7 @@ import logging
 from tutnext.config import settings, redis, HTTP_PROXY
 from tutnext.core.database import db_manager
 from tutnext.services.gakuen.client import GakuenAPI
+from tutnext.services.gakuen.errors import GakuenPermissionError
 from tutnext.services.google_classroom import classroom_api
 from tutnext.services.push.pool import PushPoolManager
 
@@ -130,6 +131,12 @@ class MonitorService:
                             if classroom_kadai_list:
                                 kadai_list.extend(classroom_kadai_list)
                         break  # 成功，退出重试循环
+                    except GakuenPermissionError as perm_error:
+                        # 凭据缺失（用户名或密码为空）属于数据问题，不计入 API 错误
+                        logger.warning(
+                            f"用户 {username} 凭据无效，跳过: {perm_error}"
+                        )
+                        return
                     except Exception as api_error:
                         if "パスワードが正しくありません" in str(api_error):
                             logger.warning(

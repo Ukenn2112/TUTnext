@@ -20,6 +20,13 @@ from tutnext.config import JAPAN_TZ, settings
 logger = logging.getLogger(__name__)
 
 
+class _NoSignalServer(uvicorn.Server):
+    """禁用 uvicorn 自带的信号处理，由父级统一管理，避免重复触发"""
+
+    def install_signal_handlers(self) -> None:
+        pass
+
+
 async def start_api_server(stop_event: asyncio.Event):
     """启动 FastAPI/Uvicorn API 服务器"""
     config = uvicorn.Config(
@@ -29,9 +36,7 @@ async def start_api_server(stop_event: asyncio.Event):
         reload=False,
         log_level="info",
     )
-    server = uvicorn.Server(config)
-    # 由父级统一管理信号，避免 uvicorn 重复安装 handler 导致信号触发两次
-    server.install_signal_handlers = lambda: None
+    server = _NoSignalServer(config)
 
     async def _watch_stop():
         await stop_event.wait()

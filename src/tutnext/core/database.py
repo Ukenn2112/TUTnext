@@ -40,7 +40,7 @@ class DatabaseManager:
                     )
                     """
                     )
-                    
+
                     # 创建用户令牌表
                     await conn.execute(
                         """
@@ -51,6 +51,34 @@ class DatabaseManager:
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                     )
+                    """
+                    )
+
+                    # 清理历史脏数据：删除 username/encryptedPassword/deviceToken 为空的记录
+                    deleted = await conn.execute(
+                        """
+                    DELETE FROM users
+                    WHERE username = '' OR encryptedPassword = '' OR deviceToken = ''
+                    """
+                    )
+                    if deleted != "DELETE 0":
+                        logging.warning(f"启动清理：已删除无效用户记录 ({deleted})")
+
+                    # 添加 CHECK 约束，防止今后写入空字符串（已存在则忽略）
+                    await conn.execute(
+                        """
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conname = 'users_nonempty_fields'
+                        ) THEN
+                            ALTER TABLE users
+                            ADD CONSTRAINT users_nonempty_fields
+                            CHECK (username <> '' AND encryptedPassword <> '' AND deviceToken <> '');
+                        END IF;
+                    END
+                    $$;
                     """
                     )
 
@@ -88,6 +116,9 @@ class DatabaseManager:
         self, username: str, encrypted_password: str, device_token: str
     ) -> bool:
         """插入或更新用户"""
+        if not username or not encrypted_password or not device_token:
+            logging.warning(f"拒绝写入：用户名、密码或设备Token为空 (username={repr(username)})")
+            return False
         await self.init_db()
         if not self._pool:
             raise RuntimeError("数据库连接池未初始化")
