@@ -106,24 +106,9 @@ async def check_tmrw_course_user_push(
 
             has_changes = False
             for t in data["time_table"]:
-                if t["lesson_num"] == 1:
-                    pool_name = "morning_8_50am"
-                elif t["lesson_num"] == 2:
-                    pool_name = "morning_10_30am"
-                elif t["lesson_num"] == 3:
-                    pool_name = "lunch_12_50pm"
-                elif t["lesson_num"] == 4:
-                    pool_name = "afternoon_2_30pm"
-                elif t["lesson_num"] == 5:
-                    pool_name = "afternoon_4_10pm"
-                elif t["lesson_num"] == 6:
-                    pool_name = "evening_5_50pm"
-                elif t["lesson_num"] == 7:
-                    pool_name = "evening_7_30pm"
-                else:
-                    pool_name = "realtime"
                 if "special_tags" in t:
                     if "休講" in t["special_tags"]:
+                        # 即時通知のみ（課前アラートは Live Activity が代替）
                         await push_manager.add_message_to_pool(
                             "realtime",
                             deviceToken,
@@ -131,19 +116,12 @@ async def check_tmrw_course_user_push(
                             f"明日の「{t['name']}」授業は休講となります。",
                             data={"toPage": "timetable"},
                         )
-                        await push_manager.add_message_to_pool(
-                            pool_name,
-                            deviceToken,
-                            "【注意】次の授業の休講お知らせ",
-                            f"次の「{t['name']}」授業は休講となります。",
-                            interruption_level="time-sensitive",
-                            data={"toPage": "timetable"},
-                        )
                         has_changes = True
                         continue
                 elif "previous_room" not in t:
                     continue
                 t["room"] = t["room"].replace("教室", "")
+                # 即時 background push（Timetable UI の教室標注用 — 維持）
                 push_data = {
                     "updateType": "roomChange",
                     "name": t["name"],
@@ -152,14 +130,7 @@ async def check_tmrw_course_user_push(
                 await push_manager.add_background_message_to_pool(
                     "realtime", deviceToken, push_data
                 )
-                await push_manager.add_message_to_pool(
-                    pool_name,
-                    deviceToken,
-                    "【注意】次の授業の教室変更あり",
-                    f"「{t['name']}」の教室が{t['room']}に変更されました。",
-                    interruption_level="time-sensitive",
-                    data={"toPage": "timetable"},
-                )
+                # 課前アラート push は Live Activity が代替するため削除
                 has_changes = True
             # 检测到课程变更（休講或教室変更）时，清除该用户的日程缓存，确保下次请求返回最新数据
             if has_changes:

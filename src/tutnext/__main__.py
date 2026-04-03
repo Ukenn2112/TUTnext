@@ -117,6 +117,20 @@ async def schedule_bus_scraper():
             logger.error("每周巴士时刻表更新出错: %s", e)
 
 
+async def schedule_live_activity_dispatcher():
+    """每30秒检查一次 Live Activity 过渡事件并推送"""
+    from tutnext.services.push.live_activity import dispatch_live_activity_pushes
+
+    while True:
+        try:
+            sent = await dispatch_live_activity_pushes()
+            if sent > 0:
+                logger.info("LA dispatcher: sent %d pushes", sent)
+        except Exception as e:
+            logger.error("LA dispatcher error: %s", e)
+        await asyncio.sleep(30)
+
+
 async def schedule_monitor_task(push_manager):
     """每5分钟运行一次监测任务，凌晨3:00至6:10之间不执行"""
     from tutnext.services.push.sender import monitor_task_push
@@ -185,6 +199,8 @@ async def run_all():
                 logger.info("课题监测推送已禁用 (ENABLE_MONITOR_PUSH=false)")
             # 巴士时刻表自动更新 (启动时 + 每周一 3:00 JST)
             scheduler_tasks.append(tg.create_task(schedule_bus_scraper()))
+            # Live Activity 推送调度 (每30秒)
+            scheduler_tasks.append(tg.create_task(schedule_live_activity_dispatcher()))
     except* (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("程序被用户中断")
     except* Exception as eg:
