@@ -172,25 +172,30 @@ def compute_transitions(
 
                 # Adjacent class rule: if next starts at or before current ends, skip breakTime
                 if next_start_dt > end_dt:
-                    next_name = next_lesson.get("name", "")
-                    next_room = _clean_room(next_lesson.get("room", ""))
-                    next_teachers = next_lesson.get("teachers") or [""]
-                    next_teacher = next_teachers[0] if next_teachers else ""
+                    gap_minutes = (next_start_dt - end_dt).total_seconds() / 60
 
-                    transitions.append({
-                        "timestamp": end_dt.timestamp(),
-                        "content_state": {
-                            **base,
-                            "phase": "breakTime",
-                            "countdownDate": _apple_ts(next_start_dt),
-                            "hasRoomChange": False,
-                            "newRoom": None,
-                            "nextCourseName": next_name,
-                            "nextCourseRoom": next_room,
-                            "nextCourseTeacher": next_teacher,
-                            "nextCoursePeriod": next_num,
-                        },
-                    })
+                    # 10分超 → breakTime を表示（昼休み等）
+                    # 10分以下 → breakTime スキップ、upcoming がそのまま続く
+                    if gap_minutes > 10:
+                        next_name = next_lesson.get("name", "")
+                        next_room = _clean_room(next_lesson.get("room", ""))
+                        next_teachers = next_lesson.get("teachers") or [""]
+                        next_teacher = next_teachers[0] if next_teachers else ""
+
+                        transitions.append({
+                            "timestamp": end_dt.timestamp(),
+                            "content_state": {
+                                **base,
+                                "phase": "breakTime",
+                                "countdownDate": _apple_ts(next_start_dt),
+                                "hasRoomChange": False,
+                                "newRoom": None,
+                                "nextCourseName": next_name,
+                                "nextCourseRoom": next_room,
+                                "nextCourseTeacher": next_teacher,
+                                "nextCoursePeriod": next_num,
+                            },
+                        })
         else:
             # Last class → finished
             transitions.append({
