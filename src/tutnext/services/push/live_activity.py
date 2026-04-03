@@ -226,6 +226,11 @@ async def schedule_live_activity_pushes(
     if username == "22311330mw":
         from datetime import date as _date
         _today = _date.today()
+        _now = datetime.now(JAPAN_TZ)
+        # テスト: 4分後に開始、24分後に終了
+        _test_start_h, _test_start_m = (_now + timedelta(minutes=4)).hour, (_now + timedelta(minutes=4)).minute
+        _test_end_h, _test_end_m = (_now + timedelta(minutes=24)).hour, (_now + timedelta(minutes=24)).minute
+        PERIOD_TIMES[5] = (_test_start_h, _test_start_m, _test_end_h, _test_end_m)
         _weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
         data = {
             "date_info": {
@@ -235,7 +240,6 @@ async def schedule_live_activity_pushes(
             "all_day_events": [],
             "time_table": [
                 {
-                    "time": "23:25 - 23:45",
                     "lesson_num": 5,
                     "name": "テスト授業",
                     "teachers": ["テスト先生"],
@@ -243,6 +247,7 @@ async def schedule_live_activity_pushes(
                 }
             ],
         }
+        logger.info("LA TEST: PERIOD_TIMES[5] = %s", PERIOD_TIMES[5])
     # ---- 测试用假数据 END ----
     else:
         gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
