@@ -118,7 +118,7 @@ async def schedule_bus_scraper():
 
 
 async def schedule_live_activity_dispatcher():
-    """每30秒检查一次 Live Activity 过渡事件并推送"""
+    """每10秒检查一次 Live Activity 过渡事件并推送"""
     from tutnext.services.push.live_activity import dispatch_live_activity_pushes
 
     while True:
@@ -128,7 +128,7 @@ async def schedule_live_activity_dispatcher():
                 logger.info("LA dispatcher: sent %d pushes", sent)
         except Exception as e:
             logger.error("LA dispatcher error: %s", e)
-        await asyncio.sleep(30)
+        await asyncio.sleep(10)
 
 
 async def schedule_monitor_task(push_manager):

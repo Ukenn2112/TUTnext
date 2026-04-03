@@ -139,7 +139,7 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
             "all_day_events": [],
             "time_table": [
                 {
-                    "time": "16:20 - 17:50",
+                    "time": "23:25 - 23:45",
                     "lesson_num": 5,
                     "name": "テスト授業",
                     "teachers": ["テスト先生"],

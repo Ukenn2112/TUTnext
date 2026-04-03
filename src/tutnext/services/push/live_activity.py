@@ -140,7 +140,7 @@ def compute_transitions(
             })
 
             # ---- imminent (local only) ----
-            imm_dt = start_dt - timedelta(minutes=10)
+            imm_dt = start_dt - timedelta(minutes=5)
             if imm_dt > up_dt:
                 transitions.append({
                     "timestamp": imm_dt.timestamp(),
@@ -235,7 +235,7 @@ async def schedule_live_activity_pushes(
             "all_day_events": [],
             "time_table": [
                 {
-                    "time": "16:20 - 17:50",
+                    "time": "23:25 - 23:45",
                     "lesson_num": 5,
                     "name": "テスト授業",
                     "teachers": ["テスト先生"],
