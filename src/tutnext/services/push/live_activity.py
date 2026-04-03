@@ -402,11 +402,17 @@ async def _send_la_push(
     """Send a single Live Activity APNs push. Returns True on success."""
     now_ts = int(datetime.now(JAPAN_TZ).timestamp())
 
+    # stale-date: countdownDate を Unix timestamp に変換
+    # countdownDate は Apple reference date (2001-01-01) からの秒数
+    countdown_apple = content_state.get("countdownDate", 0)
+    stale_ts = int(countdown_apple + _APPLE_EPOCH_OFFSET)
+
     payload: dict = {
         "aps": {
             "timestamp": now_ts,
             "event": "end" if is_end else "update",
             "content-state": content_state,
+            "stale-date": stale_ts,
         },
     }
 
