@@ -227,9 +227,14 @@ async def schedule_live_activity_pushes(
         from datetime import date as _date
         _today = _date.today()
         _now = datetime.now(JAPAN_TZ)
-        # テスト: 4分後に開始、24分後に終了
-        _test_start_h, _test_start_m = (_now + timedelta(minutes=4)).hour, (_now + timedelta(minutes=4)).minute
-        _test_end_h, _test_end_m = (_now + timedelta(minutes=24)).hour, (_now + timedelta(minutes=24)).minute
+        # テスト: 4分後に開始、24分後に終了（午前0時を超えない）
+        _test_start = _now + timedelta(minutes=4)
+        _test_end = _now + timedelta(minutes=24)
+        _midnight = datetime(_today.year, _today.month, _today.day, 23, 59, tzinfo=JAPAN_TZ)
+        if _test_end > _midnight:
+            _test_end = _midnight
+        _test_start_h, _test_start_m = _test_start.hour, _test_start.minute
+        _test_end_h, _test_end_m = _test_end.hour, _test_end.minute
         PERIOD_TIMES[5] = (_test_start_h, _test_start_m, _test_end_h, _test_end_m)
         _weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
         data = {

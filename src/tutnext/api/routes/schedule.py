@@ -135,6 +135,10 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
         today = now_jst.date()
         test_start = now_jst + timedelta(minutes=4)
         test_end = now_jst + timedelta(minutes=24)
+        # 午前0時を超えないようにする
+        midnight = datetime(today.year, today.month, today.day, 23, 59, tzinfo=JAPAN_TZ)
+        if test_end > midnight:
+            test_end = midnight
         weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
         fake_result = {
             "date_info": {
