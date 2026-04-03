@@ -129,7 +129,12 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
 
     # ---- 测试用假数据: 22311330mw ----
     if username == "22311330mw":
-        today = datetime.now().date()
+        from tutnext.config import JAPAN_TZ
+        from datetime import timedelta
+        now_jst = datetime.now(JAPAN_TZ)
+        today = now_jst.date()
+        test_start = now_jst + timedelta(minutes=4)
+        test_end = now_jst + timedelta(minutes=24)
         weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
         fake_result = {
             "date_info": {
@@ -139,7 +144,7 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
             "all_day_events": [],
             "time_table": [
                 {
-                    "time": "23:25 - 23:45",
+                    "time": f"{test_start.strftime('%H:%M')} - {test_end.strftime('%H:%M')}",
                     "lesson_num": 5,
                     "name": "テスト授業",
                     "teachers": ["テスト先生"],
