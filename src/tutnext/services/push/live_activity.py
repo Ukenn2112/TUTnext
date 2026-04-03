@@ -118,7 +118,7 @@ def compute_transitions(
             "newRoom": room if has_room_change else None,
         }
 
-        # ---- upcoming (local only, skip if push_only) ----
+        # ---- upcoming ----
         if not push_only:
             if i == 0:
                 up_dt = start_dt - timedelta(minutes=30)
@@ -126,7 +126,14 @@ def compute_transitions(
                 prev_num = sorted_lessons[i - 1].get("lesson_num", 0)
                 if prev_num in PERIOD_TIMES:
                     _, _, peh, pem = PERIOD_TIMES[prev_num]
-                    up_dt = _make_jst_dt(date_str, peh, pem)
+                    prev_end_dt = _make_jst_dt(date_str, peh, pem)
+                    gap_minutes = (start_dt - prev_end_dt).total_seconds() / 60
+                    if gap_minutes > 10:
+                        # 長い休憩: upcoming は授業開始10分前から
+                        up_dt = start_dt - timedelta(minutes=10)
+                    else:
+                        # 短い休憩: upcoming は前の授業終了直後から
+                        up_dt = prev_end_dt
                 else:
                     up_dt = start_dt - timedelta(minutes=30)
 
