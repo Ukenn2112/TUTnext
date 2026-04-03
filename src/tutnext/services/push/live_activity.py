@@ -234,59 +234,59 @@ async def schedule_live_activity_pushes(
 
     Returns the number of transitions scheduled.
     """
-    # ---- 测试用假数据: 22311330mw ----
-    if username == "22311330mw":
-        from datetime import date as _date
-        _today = _date.today()
-        _now = datetime.now(JAPAN_TZ)
-        # 1限目: +7分後開始、3分間
-        _s1 = _now + timedelta(minutes=7)
-        _e1 = _s1 + timedelta(minutes=3)
-        # 2限目: 1限目終了の12分後に開始（昼休みテスト）、3分間
-        _s2 = _e1 + timedelta(minutes=12)
-        _e2 = _s2 + timedelta(minutes=3)
-        _midnight = datetime(_today.year, _today.month, _today.day, 23, 59, tzinfo=JAPAN_TZ)
-        if _e2 > _midnight:
-            _e2 = _midnight
-        PERIOD_TIMES[3] = (_s1.hour, _s1.minute, _e1.hour, _e1.minute)
-        PERIOD_TIMES[4] = (_s2.hour, _s2.minute, _e2.hour, _e2.minute)
-        _weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-        data = {
-            "date_info": {
-                "date": _today.strftime("%Y/%m/%d"),
-                "day_of_week": _weekdays_jp[_today.weekday()],
-            },
-            "all_day_events": [],
-            "time_table": [
-                {
-                    "lesson_num": 3,
-                    "name": "情報工学概論",
-                    "teachers": ["中村 教授"],
-                    "room": "101",
-                },
-                {
-                    "lesson_num": 4,
-                    "name": "データサイエンス入門",
-                    "teachers": ["田中 准教授"],
-                    "room": "305",
-                    "previous_room": "242",
-                },
-            ],
-        }
-        logger.info("LA TEST: PERIOD_TIMES[5] = %s", PERIOD_TIMES[5])
-    # ---- 测试用假数据 END ----
-    else:
-        gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
-        try:
-            from datetime import date
-            data = await gakuen.get_later_user_schedule(
-                username, encrypted_password, target_date=date.today()
-            )
-        except GakuenAPIError as e:
-            logger.error("LA schedule fetch failed for %s: %s", username, e)
-            raise
-        finally:
-            await gakuen.close()
+    # # ---- 测试用假数据: 22311330mw ----
+    # if username == "22311330mw":
+    #     from datetime import date as _date
+    #     _today = _date.today()
+    #     _now = datetime.now(JAPAN_TZ)
+    #     # 1限目: +7分後開始、3分間
+    #     _s1 = _now + timedelta(minutes=7)
+    #     _e1 = _s1 + timedelta(minutes=3)
+    #     # 2限目: 1限目終了の12分後に開始（昼休みテスト）、3分間
+    #     _s2 = _e1 + timedelta(minutes=12)
+    #     _e2 = _s2 + timedelta(minutes=3)
+    #     _midnight = datetime(_today.year, _today.month, _today.day, 23, 59, tzinfo=JAPAN_TZ)
+    #     if _e2 > _midnight:
+    #         _e2 = _midnight
+    #     PERIOD_TIMES[3] = (_s1.hour, _s1.minute, _e1.hour, _e1.minute)
+    #     PERIOD_TIMES[4] = (_s2.hour, _s2.minute, _e2.hour, _e2.minute)
+    #     _weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
+    #     data = {
+    #         "date_info": {
+    #             "date": _today.strftime("%Y/%m/%d"),
+    #             "day_of_week": _weekdays_jp[_today.weekday()],
+    #         },
+    #         "all_day_events": [],
+    #         "time_table": [
+    #             {
+    #                 "lesson_num": 3,
+    #                 "name": "情報工学概論",
+    #                 "teachers": ["中村 教授"],
+    #                 "room": "101",
+    #             },
+    #             {
+    #                 "lesson_num": 4,
+    #                 "name": "データサイエンス入門",
+    #                 "teachers": ["田中 准教授"],
+    #                 "room": "305",
+    #                 "previous_room": "242",
+    #             },
+    #         ],
+    #     }
+    #     logger.info("LA TEST: PERIOD_TIMES[5] = %s", PERIOD_TIMES[5])
+    # # ---- 测试用假数据 END ----
+    # else:
+    gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
+    try:
+        from datetime import date
+        data = await gakuen.get_later_user_schedule(
+            username, encrypted_password, target_date=date.today()
+        )
+    except GakuenAPIError as e:
+        logger.error("LA schedule fetch failed for %s: %s", username, e)
+        raise
+    finally:
+        await gakuen.close()
 
     if not data.get("time_table"):
         logger.info("LA: %s has no classes today", username)
