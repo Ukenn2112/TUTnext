@@ -282,7 +282,7 @@ async def schedule_live_activity_pushes(
         return 0
 
     date_str = data["date_info"]["date"]
-    transitions = compute_transitions(active, date_str, push_only=True)
+    transitions = compute_transitions(active, date_str, push_only=False)
 
     # Store token
     token_key = f"la:tokens:{username}"
