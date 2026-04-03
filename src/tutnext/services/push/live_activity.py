@@ -222,17 +222,40 @@ async def schedule_live_activity_pushes(
 
     Returns the number of transitions scheduled.
     """
-    gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
-    try:
-        from datetime import date
-        data = await gakuen.get_later_user_schedule(
-            username, encrypted_password, target_date=date.today()
-        )
-    except GakuenAPIError as e:
-        logger.error("LA schedule fetch failed for %s: %s", username, e)
-        raise
-    finally:
-        await gakuen.close()
+    # ---- 测试用假数据: 22311330mw ----
+    if username == "22311330mw":
+        from datetime import date as _date
+        _today = _date.today()
+        _weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
+        data = {
+            "date_info": {
+                "date": _today.strftime("%Y/%m/%d"),
+                "day_of_week": _weekdays_jp[_today.weekday()],
+            },
+            "all_day_events": [],
+            "time_table": [
+                {
+                    "time": "16:20 - 17:50",
+                    "lesson_num": 5,
+                    "name": "テスト授業",
+                    "teachers": ["テスト先生"],
+                    "room": "101",
+                }
+            ],
+        }
+    # ---- 测试用假数据 END ----
+    else:
+        gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
+        try:
+            from datetime import date
+            data = await gakuen.get_later_user_schedule(
+                username, encrypted_password, target_date=date.today()
+            )
+        except GakuenAPIError as e:
+            logger.error("LA schedule fetch failed for %s: %s", username, e)
+            raise
+        finally:
+            await gakuen.close()
 
     if not data.get("time_table"):
         logger.info("LA: %s has no classes today", username)
