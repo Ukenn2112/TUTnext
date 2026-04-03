@@ -134,7 +134,7 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
         now_jst = datetime.now(JAPAN_TZ)
         today = now_jst.date()
         test_start = now_jst + timedelta(minutes=6)
-        test_end = now_jst + timedelta(minutes=3)
+        test_end = now_jst + timedelta(minutes=24)
         # 午前0時を超えないようにする
         midnight = datetime(today.year, today.month, today.day, 23, 59, tzinfo=JAPAN_TZ)
         if test_end > midnight:

@@ -229,7 +229,7 @@ async def schedule_live_activity_pushes(
         _now = datetime.now(JAPAN_TZ)
         # テスト: 4分後に開始、24分後に終了（午前0時を超えない）
         _test_start = _now + timedelta(minutes=6)
-        _test_end = _now + timedelta(minutes=3)
+        _test_end = _now + timedelta(minutes=24)
         _midnight = datetime(_today.year, _today.month, _today.day, 23, 59, tzinfo=JAPAN_TZ)
         if _test_end > _midnight:
             _test_end = _midnight
