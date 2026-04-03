@@ -133,12 +133,16 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
         from datetime import timedelta
         now_jst = datetime.now(JAPAN_TZ)
         today = now_jst.date()
-        test_start = now_jst + timedelta(minutes=15)
-        test_end = now_jst + timedelta(minutes=35)
+        # 1限目: +7分後開始、3分間
+        test_start1 = now_jst + timedelta(minutes=7)
+        test_end1 = test_start1 + timedelta(minutes=3)
+        # 2限目: 1限目終了の12分後に開始（昼休みテスト）、3分間
+        test_start2 = test_end1 + timedelta(minutes=12)
+        test_end2 = test_start2 + timedelta(minutes=3)
         # 午前0時を超えないようにする
         midnight = datetime(today.year, today.month, today.day, 23, 59, tzinfo=JAPAN_TZ)
-        if test_end > midnight:
-            test_end = midnight
+        if test_end2 > midnight:
+            test_end2 = midnight
         weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
         fake_result = {
             "date_info": {
@@ -148,12 +152,19 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
             "all_day_events": [],
             "time_table": [
                 {
-                    "time": f"{test_start.strftime('%H:%M')} - {test_end.strftime('%H:%M')}",
-                    "lesson_num": 5,
-                    "name": "テスト授業",
-                    "teachers": ["テスト先生"],
+                    "time": f"{test_start1.strftime('%H:%M')} - {test_end1.strftime('%H:%M')}",
+                    "lesson_num": 3,
+                    "name": "情報工学概論",
+                    "teachers": ["中村 教授"],
                     "room": "101",
-                }
+                },
+                {
+                    "time": f"{test_start2.strftime('%H:%M')} - {test_end2.strftime('%H:%M')}",
+                    "lesson_num": 4,
+                    "name": "データサイエンス入門",
+                    "teachers": ["田中 准教授"],
+                    "room": "242",
+                },
             ],
         }
         response.status_code = http_status.HTTP_200_OK

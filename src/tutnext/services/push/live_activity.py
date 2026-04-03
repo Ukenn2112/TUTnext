@@ -232,15 +232,17 @@ async def schedule_live_activity_pushes(
         from datetime import date as _date
         _today = _date.today()
         _now = datetime.now(JAPAN_TZ)
-        # テスト: 15分後に開始、35分後に終了（午前0時を超えない）
-        _test_start = _now + timedelta(minutes=15)
-        _test_end = _now + timedelta(minutes=35)
+        # 1限目: +7分後開始、3分間
+        _s1 = _now + timedelta(minutes=7)
+        _e1 = _s1 + timedelta(minutes=3)
+        # 2限目: 1限目終了の12分後に開始（昼休みテスト）、3分間
+        _s2 = _e1 + timedelta(minutes=12)
+        _e2 = _s2 + timedelta(minutes=3)
         _midnight = datetime(_today.year, _today.month, _today.day, 23, 59, tzinfo=JAPAN_TZ)
-        if _test_end > _midnight:
-            _test_end = _midnight
-        _test_start_h, _test_start_m = _test_start.hour, _test_start.minute
-        _test_end_h, _test_end_m = _test_end.hour, _test_end.minute
-        PERIOD_TIMES[5] = (_test_start_h, _test_start_m, _test_end_h, _test_end_m)
+        if _e2 > _midnight:
+            _e2 = _midnight
+        PERIOD_TIMES[3] = (_s1.hour, _s1.minute, _e1.hour, _e1.minute)
+        PERIOD_TIMES[4] = (_s2.hour, _s2.minute, _e2.hour, _e2.minute)
         _weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
         data = {
             "date_info": {
@@ -250,11 +252,17 @@ async def schedule_live_activity_pushes(
             "all_day_events": [],
             "time_table": [
                 {
-                    "lesson_num": 5,
-                    "name": "テスト授業",
-                    "teachers": ["テスト先生"],
+                    "lesson_num": 3,
+                    "name": "情報工学概論",
+                    "teachers": ["中村 教授"],
                     "room": "101",
-                }
+                },
+                {
+                    "lesson_num": 4,
+                    "name": "データサイエンス入門",
+                    "teachers": ["田中 准教授"],
+                    "room": "242",
+                },
             ],
         }
         logger.info("LA TEST: PERIOD_TIMES[5] = %s", PERIOD_TIMES[5])
