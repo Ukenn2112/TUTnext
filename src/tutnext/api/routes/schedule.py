@@ -129,10 +129,7 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
 
     # ---- 测试用假数据: 22311330mw ----
     if username == "22311330mw":
-        now = datetime.now()
-        fake_start = now + timedelta(minutes=11)
-        fake_end = fake_start + timedelta(minutes=90)
-        today = now.date()
+        today = datetime.now().date()
         weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
         fake_result = {
             "date_info": {
@@ -142,11 +139,11 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
             "all_day_events": [],
             "time_table": [
                 {
-                    "time": f"{fake_start.strftime('%H:%M')} - {fake_end.strftime('%H:%M')}",
-                    "lesson_num": 1,
+                    "time": "16:20 - 17:50",
+                    "lesson_num": 5,
                     "name": "テスト授業",
                     "teachers": ["テスト先生"],
-                    "room": "T101",
+                    "room": "101",
                 }
             ],
         }
