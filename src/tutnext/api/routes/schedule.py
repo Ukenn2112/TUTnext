@@ -127,6 +127,33 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
     username = data.username
     encryptedPassword = data.encryptedPassword
 
+    # ---- 测试用假数据: 22311330mw ----
+    if username == "22311330mw":
+        now = datetime.now()
+        fake_start = now + timedelta(minutes=11)
+        fake_end = fake_start + timedelta(minutes=90)
+        today = now.date()
+        weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
+        fake_result = {
+            "date_info": {
+                "date": today.strftime("%Y/%m/%d"),
+                "day_of_week": weekdays_jp[today.weekday()],
+            },
+            "all_day_events": [],
+            "time_table": [
+                {
+                    "time": f"{fake_start.strftime('%H:%M')} - {fake_end.strftime('%H:%M')}",
+                    "lesson_num": 1,
+                    "name": "テスト授業",
+                    "teachers": ["テスト先生"],
+                    "room": "T101",
+                }
+            ],
+        }
+        response.status_code = http_status.HTTP_200_OK
+        return {"status": True, "data": fake_result}
+    # ---- 测试用假数据 END ----
+
     target_date: Optional[date] = None
     if data.targetDate:
         try:
