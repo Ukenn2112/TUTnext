@@ -163,7 +163,8 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
                     "lesson_num": 4,
                     "name": "データサイエンス入門",
                     "teachers": ["田中 准教授"],
-                    "room": "242",
+                    "room": "305",
+                    "previous_room": "242",
                 },
             ],
         }
