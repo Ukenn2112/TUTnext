@@ -1,7 +1,6 @@
 # tutnext/services/push/sender.py
 import asyncio
 import logging
-import sys
 import aiohttp
 
 from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
@@ -12,6 +11,7 @@ from tutnext.config import redis, HTTP_PROXY, NOTIFICATION_API_URL
 # API错误计数常量
 API_ERROR_LIMIT = 50
 API_ERROR_REDIS_KEY = "api_error_count"
+API_ERROR_NOTIFIED_KEY = "api_error_notified"
 API_ERROR_EXPIRY = 86400  # 24小时(秒)
 
 
@@ -27,29 +27,26 @@ async def record_api_error():
         
         logging.warning(f"API错误计数: {error_count}/{API_ERROR_LIMIT}")
         
-        # 检查是否达到限制
+        # 检查是否达到限制，只发送一次通知，不终止程序
         if error_count >= API_ERROR_LIMIT:
-            logging.critical(f"API错误次数已达到限制({API_ERROR_LIMIT}次/天),程序即将终止")
-            
-            if NOTIFICATION_API_URL:
-                # 发送通知
-                try:
-                    title = "TUTnext推送服务通知"
-                    message = f"API错误次数已达到限制({API_ERROR_LIMIT}次/天),程序已终止"
-                    notification_url = NOTIFICATION_API_URL.format(title=title, message=message)
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(notification_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                            if response.status == 200:
-                                logging.info("通知API调用成功")
-                            else:
-                                logging.warning(f"通知API调用失败,状态码: {response.status}")
-                except Exception as notify_error:
-                    logging.error(f"发送通知时发生异常: {notify_error}")
-            
-            # 清理Redis连接
-            await redis.close()
-            # 终止程序
-            sys.exit(1)
+            already_notified = await redis.get(API_ERROR_NOTIFIED_KEY)
+            if not already_notified:
+                logging.critical(f"API错误次数已达到限制({API_ERROR_LIMIT}次/天),发送通知")
+                await redis.set(API_ERROR_NOTIFIED_KEY, "1", ex=API_ERROR_EXPIRY)
+
+                if NOTIFICATION_API_URL:
+                    try:
+                        title = "TUTnext推送服务通知"
+                        message = f"API错误次数已达到限制({API_ERROR_LIMIT}次/天)"
+                        notification_url = NOTIFICATION_API_URL.format(title=title, message=message)
+                        async with aiohttp.ClientSession() as session:
+                            async with session.get(notification_url, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                                if response.status == 200:
+                                    logging.info("通知API调用成功")
+                                else:
+                                    logging.warning(f"通知API调用失败,状态码: {response.status}")
+                    except Exception as notify_error:
+                        logging.error(f"发送通知时发生异常: {notify_error}")
     except Exception as e:
         logging.error(f"记录API错误时发生异常: {e}")
 
