@@ -695,15 +695,22 @@ class GakuenAPI:
                             class_details := item.find("div", class_="jknbtDtl"), Tag
                         ):
                             # 通常教室情報を取得
-                            room_divs = class_details.find_all("div", recursive=False)
-                            for div in room_divs:
+                            # 教室は教員リンク(a.tantoKyoin)を含むdivの次の兄弟divにある
+                            teacher_parent = None
+                            for div in class_details.find_all("div", recursive=False):
+                                if isinstance(div, Tag) and div.find("a", class_="tantoKyoin"):
+                                    teacher_parent = div
+                                    break
+                            if teacher_parent:
+                                next_div = teacher_parent.find_next_sibling("div")
                                 if (
-                                    isinstance(div, Tag)
-                                    and not div.get("id")
-                                    and not div.get("class")
-                                    and "教室" in div.text
+                                    isinstance(next_div, Tag)
+                                    and not next_div.get("id")
+                                    and not next_div.get("class")
                                 ):
-                                    class_data["room"] = div.text.strip()
+                                    room_text = next_div.get_text(strip=True)
+                                    if room_text:
+                                        class_data["room"] = room_text
 
                             # 変更前教室を取得
                             if isinstance(
