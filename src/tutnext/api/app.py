@@ -9,6 +9,7 @@ from tutnext.api.routes import oauth, schedule, bus, kadai, push, tmail, live_ac
 from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.core.database import db_manager
 from tutnext.config import HTTP_PROXY
+from tutnext.services.gakuen.session_manager import get_session_manager
 
 
 class UserData(BaseModel):
@@ -57,13 +58,14 @@ async def policy_page():
 
 @app.post("/login_check")
 async def login_check(data: UserData):
-    gakuen = GakuenAPI(data.username, data.password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
-    try:
-        await gakuen.api_login()
-        return {"status": "success"}
-    except GakuenAPIError as e:
-        return {"status": "error", "message": str(e)}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-    finally:
-        await gakuen.close()
+    async with get_session_manager().lock_only(data.username):
+        gakuen = GakuenAPI(data.username, data.password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
+        try:
+            await gakuen.api_login()
+            return {"status": "success"}
+        except GakuenAPIError as e:
+            return {"status": "error", "message": str(e)}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+        finally:
+            await gakuen.close()

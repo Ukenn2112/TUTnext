@@ -17,6 +17,7 @@ from aioapns import NotificationRequest, PushType
 
 from tutnext.config import JAPAN_TZ, HTTP_PROXY, redis, APNS_CONFIG
 from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
+from tutnext.services.gakuen.session_manager import get_session_manager
 from tutnext.services.push.apns_client import get_apns_client
 
 logger = logging.getLogger(__name__)
@@ -276,17 +277,15 @@ async def schedule_live_activity_pushes(
     #     logger.info("LA TEST: PERIOD_TIMES[5] = %s", PERIOD_TIMES[5])
     # # ---- 测试用假数据 END ----
     # else:
-    gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
-    try:
+    async with get_session_manager().acquire(username, encrypted_password) as gakuen:
         from datetime import date
-        data = await gakuen.get_later_user_schedule(
-            username, encrypted_password, target_date=date.today()
-        )
-    except GakuenAPIError as e:
-        logger.error("LA schedule fetch failed for %s: %s", username, e)
-        raise
-    finally:
-        await gakuen.close()
+        try:
+            data = await gakuen.get_later_user_schedule(
+                username, encrypted_password, target_date=date.today(), skip_login=True
+            )
+        except GakuenAPIError as e:
+            logger.error("LA schedule fetch failed for %s: %s", username, e)
+            raise
 
     if not data.get("time_table"):
         logger.info("LA: %s has no classes today", username)

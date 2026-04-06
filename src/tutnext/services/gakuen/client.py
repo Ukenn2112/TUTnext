@@ -519,6 +519,7 @@ class GakuenAPI:
         user_id: Optional[str] = None,
         encrypted_login_password: Optional[str] = None,
         target_date: Optional[date] = None,
+        skip_login: bool = False,
     ) -> dict:
         """後日ユーザースケジュール取得 (encrypted_login_passwordが必要) Student Only
 
@@ -563,7 +564,8 @@ class GakuenAPI:
             target_date = date.today() + timedelta(days=1)
         target_date_str = target_date.strftime("%Y/%m/%d")
         try:
-            await self._mobile_login()
+            if not skip_login:
+                await self._mobile_login()
             schedule_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50101.xhtml"
             cal = self._ids.calendar_id or "pmPage:funcForm:j_idt104"
             acc_active = self._ids.accordion_active_id or "pmPage:funcForm:j_idt107_active"
@@ -740,6 +742,7 @@ class GakuenAPI:
         self,
         user_id: Optional[str] = None,
         encrypted_login_password: Optional[str] = None,
+        skip_login: bool = False,
     ) -> list[dict]:
         """ユーザーの課題データを取得 (Mobile loginが必要) Student Only
 
@@ -775,7 +778,8 @@ class GakuenAPI:
         if encrypted_login_password:
             self.encrypted_login_password = encrypted_login_password
         try:
-            await self._mobile_login()
+            if not skip_login:
+                await self._mobile_login()
             kadai_url = f"{self.base_url}/uprx/up/bs/bsa501/Bsa50101.xhtml"
             # Fix 2: use dynamically discovered IDs with fallbacks
             acc_active = self._ids.accordion_active_id or "pmPage:funcForm:j_idt107_active"

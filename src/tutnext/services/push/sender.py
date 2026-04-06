@@ -7,6 +7,7 @@ from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.services.push.pool import PushPoolManager
 from tutnext.core.database import db_manager
 from tutnext.config import redis, HTTP_PROXY, NOTIFICATION_API_URL
+from tutnext.services.gakuen.session_manager import get_session_manager
 
 # API错误计数常量
 API_ERROR_LIMIT = 50
@@ -57,15 +58,13 @@ async def check_tmrw_course_user_push(
 ):
     """处理单个用户的推送任务"""
     try:
-        # 为每个用户创建新的GakuenAPI实例
-        gakuen = GakuenAPI("", "", "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
-        try:
+        async with get_session_manager().acquire(username, encryptedPassword) as gakuen:
             max_retries = 5
             retry_count = 0
             while retry_count < max_retries:
                 try:
                     data = await gakuen.get_later_user_schedule(
-                        username, encryptedPassword
+                        username, encryptedPassword, skip_login=True
                     )
                     break  # 如果成功获取数据，跳出循环
                 except GakuenAPIError as api_error:
@@ -80,6 +79,8 @@ async def check_tmrw_course_user_push(
                     logging.warning(
                         f"用户 {username} 获取课程数据失败，重试第 {retry_count} 次: {api_error}"
                     )
+                    # 重试前让 session manager 失效缓存，下次 acquire 会重新登录
+                    await get_session_manager().invalidate(username)
                     await asyncio.sleep(2)  # 等待2秒后重试
             # if all_day_events := data["all_day_events"]:
             #     for event in all_day_events:
@@ -134,11 +135,6 @@ async def check_tmrw_course_user_push(
                 await redis.delete(f"schedule:ical:{username}")
                 logging.info(f"用户 {username} 的日程缓存已清除")
             logging.info(f"用户 {username} 的推送教室变更消息已添加到推送池")
-        except Exception as e:
-            logging.error(f"处理用户 {username} 时出错: {e}")
-        finally:
-            # 确保关闭API连接
-            await gakuen.close()
     except Exception as e:
         logging.error(f"处理用户 {username} 时出错: {e}")
 
