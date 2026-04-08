@@ -44,6 +44,8 @@ from tutnext.services.gakuen.ids import _MobilePageIds
 
 import aiohttp
 
+_ROOM_CACHE_TTL = 604800  # 1 week
+
 
 class GakuenAPI:
     """学園システムAPIクライアント"""
@@ -542,7 +544,7 @@ class GakuenAPI:
                     - "id": イベントID
                     - "is_important": 重要なイベントかどうか（bool）
                 - "time_table": 時間割のリスト
-                    - "time": 授業時間（例: "09:00 - 10:40"）
+                    - "time": 授業時間（例: "09:00-10:40"）
                     - "special_tags": 特別なタグのリスト（存在する場合）
                     - "lesson_num": 授業限数（1-7）
                     - "name": 授業名
@@ -728,6 +730,17 @@ class GakuenAPI:
 
                         if class_data:
                             out_data["time_table"].append(class_data)
+
+            # 教室情報を Redis にキャッシュ
+            try:
+                from tutnext.config import redis
+                for entry in out_data["time_table"]:
+                    if entry.get("name") and entry.get("room"):
+                        await redis.set(
+                            f"room:{entry['name']}", entry["room"], ex=_ROOM_CACHE_TTL
+                        )
+            except Exception:
+                pass  # Redis 障害時はキャッシュをスキップ
 
             return out_data
         except Exception as e:
@@ -1356,6 +1369,17 @@ class GakuenAPI:
 
         # タグ情報をクラスデータに追加
         __attach_tags_to_classes(class_tags)
+
+        # 教室情報を Redis にキャッシュ
+        try:
+            from tutnext.config import redis
+            for course_name, info in self._state.class_list.items():
+                if info.get("lessonClass"):
+                    await redis.set(
+                        f"room:{course_name}", info["lessonClass"], ex=_ROOM_CACHE_TTL
+                    )
+        except Exception:
+            pass  # Redis 障害時はキャッシュをスキップ
 
     async def _call_first_setting(self) -> dict:
         """firstSetting API を呼び出す (api_login 後に必須)

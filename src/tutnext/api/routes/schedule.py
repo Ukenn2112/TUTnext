@@ -6,7 +6,7 @@ import traceback
 from icalendar import Alarm, Calendar, Event
 from fastapi import APIRouter, HTTPException, Response, status as http_status
 from datetime import date, datetime, timedelta, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel
 
@@ -21,6 +21,13 @@ class LaterScheduleRequest(BaseModel):
     username: str
     encryptedPassword: str
     targetDate: Optional[str] = None  # YYYY-MM-DD 格式，省略时默认为明天
+
+
+class ClassBulletinRequest(BaseModel):
+    username: str
+    encryptedPassword: str
+    year: int = 0
+    semester: Literal[0, 1, 2] = 0  # 0=全学期, 1=春学期, 2=秋学期
 
 
 @router.get("")
@@ -197,3 +204,77 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
             logging.error(f"Traceback: {traceback.format_exc()}")
             response.status_code = http_status.HTTP_500_INTERNAL_SERVER_ERROR
             return {"status": False, "message": str(e)}
+
+
+@router.post("/class_bulletin")
+async def get_class_bulletin_with_room(data: ClassBulletinRequest, response: Response):
+    """class_bulletin のプロキシ。Redis から教室情報を補完して返す。"""
+    username = data.username
+    encrypted_password = data.encryptedPassword
+
+    # 1. class_bulletin を呼び出す
+    gakuen = GakuenAPI(
+        username, "", "https://next.tama.ac.jp",
+        encrypted_login_password=encrypted_password,
+        http_proxy=HTTP_PROXY,
+    )
+    error_response = {
+        "responseCode": 500,
+        "statusDto": {"success": False, "messageList": []},
+        "data": None,
+        "langCd": "ja",
+    }
+    try:
+        gakuen._state.api_is_logged_in = True
+        result = await gakuen.class_bulletin(data.year, data.semester)
+    except GakuenAPIError as e:
+        logging.warning(f"[{username}] class_bulletin error: {e}")
+        response.status_code = http_status.HTTP_500_INTERNAL_SERVER_ERROR
+        error_response["statusDto"]["messageList"] = [str(e)]
+        return error_response
+    except Exception as e:
+        logging.error(f"[{username}] class_bulletin error: {e}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
+        response.status_code = http_status.HTTP_500_INTERNAL_SERVER_ERROR
+        error_response["statusDto"]["messageList"] = [str(e)]
+        return error_response
+    finally:
+        await gakuen.close()
+
+    # 2. Redis から教室情報を補完
+    jgkm_list = result.get("jgkmDtoList", [])
+    missing_rooms: list[str] = []
+    for item in jgkm_list:
+        jugyo_name = item.get("jugyoName", "")
+        if not item.get("kyostName") and jugyo_name:
+            cached = await redis.get(f"room:{jugyo_name}")
+            if cached:
+                item["kyostName"] = cached if isinstance(cached, str) else cached.decode()
+            else:
+                missing_rooms.append(jugyo_name)
+
+    # 3. キャッシュミスがある場合、1週間分のスケジュールを取得して Redis を埋める
+    if missing_rooms:
+        try:
+            async with get_session_manager().acquire(username, encrypted_password) as gakuen_mobile:
+                today = date.today()
+                for offset in range(7):
+                    target = today + timedelta(days=offset)
+                    await gakuen_mobile.get_later_user_schedule(
+                        target_date=target, skip_login=True,
+                    )
+            # 再度 Redis から補完
+            for item in jgkm_list:
+                if not item.get("kyostName"):
+                    cached = await redis.get(f"room:{item.get('jugyoName', '')}")
+                    if cached:
+                        item["kyostName"] = cached if isinstance(cached, str) else cached.decode()
+        except Exception as e:
+            logging.warning(f"[{username}] room cache population failed: {e}")
+
+    return {
+        "responseCode": 200,
+        "statusDto": {"success": True, "messageList": []},
+        "data": result,
+        "langCd": "ja",
+    }
