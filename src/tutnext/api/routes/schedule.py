@@ -23,11 +23,19 @@ class LaterScheduleRequest(BaseModel):
     targetDate: Optional[str] = None  # YYYY-MM-DD 格式，省略时默认为明天
 
 
+class ClassBulletinData(BaseModel):
+    kaikoNendo: int = 0
+    gakkiNo: Literal[0, 1, 2] = 0
+
+
 class ClassBulletinRequest(BaseModel):
-    username: str
-    encryptedPassword: str
-    year: int = 0
-    semester: Literal[0, 1, 2] = 0  # 0=全学期, 1=春学期, 2=秋学期
+    loginUserId: str
+    encryptedLoginPassword: str
+    plainLoginPassword: Optional[str] = None
+    productCd: Optional[str] = None
+    subProductCd: Optional[str] = None
+    langCd: Optional[str] = None
+    data: ClassBulletinData = ClassBulletinData()
 
 
 @router.get("")
@@ -209,8 +217,8 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
 @router.post("/class_bulletin")
 async def get_class_bulletin_with_room(data: ClassBulletinRequest, response: Response):
     """class_bulletin のプロキシ。Redis から教室情報を補完して返す。"""
-    username = data.username
-    encrypted_password = data.encryptedPassword
+    username = data.loginUserId
+    encrypted_password = data.encryptedLoginPassword
 
     # 1. class_bulletin を呼び出す
     gakuen = GakuenAPI(
@@ -226,7 +234,7 @@ async def get_class_bulletin_with_room(data: ClassBulletinRequest, response: Res
     }
     try:
         gakuen._state.api_is_logged_in = True
-        result = await gakuen.class_bulletin(data.year, data.semester)
+        result = await gakuen.class_bulletin(data.data.kaikoNendo, data.data.gakkiNo)
     except GakuenAPIError as e:
         logging.warning(f"[{username}] class_bulletin error: {e}")
         response.status_code = http_status.HTTP_500_INTERNAL_SERVER_ERROR
