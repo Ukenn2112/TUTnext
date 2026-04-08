@@ -28,7 +28,7 @@ from datetime import datetime
 from tutnext.config import settings, redis, HTTP_PROXY, JAPAN_TZ
 from tutnext.core.database import db_manager
 from tutnext.services.gakuen.client import GakuenAPI
-from tutnext.services.gakuen.errors import GakuenPermissionError
+from tutnext.services.gakuen.errors import GakuenLoginError, GakuenPermissionError
 from tutnext.services.gakuen.session_manager import get_session_manager
 from tutnext.services.google_classroom import classroom_api
 from tutnext.services.push.pool import PushPoolManager
@@ -277,5 +277,13 @@ class MonitorService:
                 user["encryptedpassword"],
                 user["devicetoken"],
             )
+        except GakuenLoginError as e:
+            if "パスワードが正しくありません" in str(e):
+                logger.warning(
+                    f"用户 {user['username']} 密码错误，删除用户: {e}"
+                )
+                await db_manager.delete_user(user["username"])
+            else:
+                logger.error(f"监测用户 {user['username']} 登录错误: {e}")
         except Exception as e:
             logger.error(f"监测用户 {user['username']} 时出错: {e}")
