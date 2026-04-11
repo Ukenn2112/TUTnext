@@ -248,8 +248,15 @@ async def get_class_bulletin_with_room(data: ClassBulletinRequest, response: Res
     finally:
         await gakuen.close()
 
-    # 2. Redis から教室情報を補完
+    # 2. ユーザーの全授業名を Redis にキャッシュ（モニター優先度スケジューリング用）
     jgkm_list = result.get("jgkmDtoList", [])
+    course_names = [item["jugyoName"] for item in jgkm_list if item.get("jugyoName")]
+    if course_names:
+        user_courses_key = f"user_courses:{username}"
+        await redis.delete(user_courses_key)
+        await redis.sadd(user_courses_key, *course_names)
+        await redis.expire(user_courses_key, 86400)
+
     missing_rooms: list[str] = []
     for item in jgkm_list:
         jugyo_name = item.get("jugyoName", "")
@@ -260,7 +267,7 @@ async def get_class_bulletin_with_room(data: ClassBulletinRequest, response: Res
             else:
                 missing_rooms.append(jugyo_name)
 
-    # 3. キャッシュミスがある場合、1週間分のスケジュールを取得して Redis を埋める
+    # キャッシュミスがある場合、1週間分のスケジュールを取得して Redis を埋める
     if missing_rooms:
         try:
             async with get_session_manager().acquire(username, encrypted_password) as gakuen_mobile:

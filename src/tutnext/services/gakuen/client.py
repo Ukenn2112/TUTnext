@@ -744,6 +744,11 @@ class GakuenAPI:
                         await redis.set(
                             f"room:{entry['name']}", entry["room"], ex=_ROOM_CACHE_TTL
                         )
+                # ユーザーの授業名をキャッシュ（モニター優先度スケジューリング用）
+                course_names = [e["name"] for e in out_data["time_table"] if e.get("name")]
+                if course_names and self.user_id:
+                    await redis.sadd(f"user_courses:{self.user_id}", *course_names)
+                    await redis.expire(f"user_courses:{self.user_id}", 86400)
             except RedisError as e:
                 logger.debug("Redis cache write skipped: %s", e)
 
