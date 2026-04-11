@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode
 from tutnext.core.database import db_manager
-from tutnext.config import settings
+from tutnext.config import settings, redis
 
 
 _GOOGLE_API_CONCURRENCY = 10
@@ -364,7 +364,21 @@ class GoogleClassroomAPI:
                 # 创建课程ID到课程名称的映射
                 course_name_map = {course["id"]: course["name"] for course in courses}
                 course_ids = list(course_name_map.keys())
-                
+
+                # 缓存 Google Classroom 课程名到反向索引（Layer 5 课程关联传播用）
+                gc_course_names = list(course_name_map.values())
+                if gc_course_names:
+                    try:
+                        pipe = redis.pipeline()
+                        pipe.sadd(f"user_courses:{username}", *gc_course_names)
+                        pipe.expire(f"user_courses:{username}", 86400)
+                        for cn in gc_course_names:
+                            pipe.sadd(f"course_users:{cn}", username)
+                            pipe.expire(f"course_users:{cn}", 86400)
+                        await pipe.execute()
+                    except Exception:
+                        pass  # Redis 失败不影响主流程
+
                 # 2. 并行获取 courseWork 和 submissions（通配符方式无依赖关系）
                 course_work_map, submissions_map = await asyncio.gather(
                     self._get_course_work_batch(session, access_token, course_ids),
