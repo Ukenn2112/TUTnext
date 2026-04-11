@@ -16,7 +16,7 @@ from tutnext.core.database import db_manager
 from tutnext.config import settings
 
 
-_GOOGLE_API_CONCURRENCY = 5
+_GOOGLE_API_CONCURRENCY = 10
 
 
 class GoogleClassroomAPI:
@@ -365,29 +365,29 @@ class GoogleClassroomAPI:
                 course_name_map = {course["id"]: course["name"] for course in courses}
                 course_ids = list(course_name_map.keys())
                 
-                # 2. 批处理获取所有课程的课题
-                course_work_map = await self._get_course_work_batch(session, access_token, course_ids)
-                
+                # 2. 并行获取 courseWork 和 submissions（通配符方式无依赖关系）
+                course_work_map, submissions_map = await asyncio.gather(
+                    self._get_course_work_batch(session, access_token, course_ids),
+                    self._get_student_submissions_batch(session, access_token, course_ids),
+                )
+
                 # 3. 筛选有截止时间的课题，并且去除已经超过截止时间1天以上的课题
                 course_work_with_due = []
-                # 获取当前UTC时间减去1天作为阈值
                 one_day_ago_utc = datetime.now(timezone.utc) - timedelta(days=1)
-                
+
                 for course_id, course_work_list in course_work_map.items():
                     for work in course_work_list:
-                        if "dueDate" in work:  # 只处理有截止时间的课题
+                        if "dueDate" in work:
                             due_date_data = work['dueDate']
                             due_time_data = work.get('dueTime')
-                            
-                            # 获取时间信息，如果没有指定时间，默认为23:59（与_format_due_datetime保持一致）
+
                             if due_time_data:
                                 hours = due_time_data.get('hours', 0)
                                 minutes = due_time_data.get('minutes', 0)
                             else:
                                 hours = 23
                                 minutes = 59
-                            
-                            # 构建UTC时间的datetime对象
+
                             due_date_utc = datetime(
                                 due_date_data['year'],
                                 due_date_data['month'],
@@ -396,22 +396,15 @@ class GoogleClassroomAPI:
                                 minutes,
                                 tzinfo=timezone.utc
                             )
-                            
-                            # 只保留未超过1天的课题（即截止时间在昨天之后的课题）
+
                             if due_date_utc >= one_day_ago_utc:
                                 course_work_with_due.append(work)
-                
+
                 if not course_work_with_due:
                     logging.info(f"用户 {username} 没有有截止时间的课题")
                     return []
-                
+
                 logging.info(f"用户 {username} 有 {len(course_work_with_due)} 个有截止时间的课题")
-                
-                # 4. 按课程批量获取未完成提交（通配符方式，N 次请求代替 M 次）
-                course_ids_with_due = list({cw["courseId"] for cw in course_work_with_due})
-                submissions_map = await self._get_student_submissions_batch(
-                    session, access_token, course_ids_with_due
-                )
                 
                 # 5. 汇总结果
                 pending_assignments = []
