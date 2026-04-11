@@ -140,9 +140,14 @@ class SessionManager:
 
         for username in to_clean:
             us = self._sessions.get(username)
-            if us and not us.lock.locked():
-                await self._close_session(us)
-                logger.debug(f"[SessionManager] 清理过期 session: {username}")
+            if us is None:
+                continue
+            # Acquire the per-user lock to prevent race with acquire()
+            async with us.lock:
+                # Re-check after acquiring lock — session may have been refreshed
+                if us.gakuen is not None and (time.monotonic() - us.last_used) >= max_idle_seconds:
+                    await self._close_session(us)
+                    logger.debug(f"[SessionManager] 清理过期 session: {username}")
 
     async def invalidate(self, username: str) -> None:
         """主动失效指定用户的缓存 session。"""

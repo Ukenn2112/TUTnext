@@ -233,8 +233,7 @@ async def get_class_bulletin_with_room(data: ClassBulletinRequest, response: Res
         "langCd": "ja",
     }
     try:
-        gakuen._state.api_is_logged_in = True
-        result = await gakuen.class_bulletin(data.data.kaikoNendo, data.data.gakkiNo)
+        result = await gakuen.class_bulletin(data.data.kaikoNendo, data.data.gakkiNo, skip_login=True)
     except GakuenAPIError as e:
         logging.warning(f"[{username}] class_bulletin error: {e}")
         response.status_code = http_status.HTTP_500_INTERNAL_SERVER_ERROR

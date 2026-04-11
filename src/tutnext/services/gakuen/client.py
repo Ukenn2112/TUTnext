@@ -31,6 +31,8 @@ from typing import Any, Optional, Union, Literal
 from bs4 import BeautifulSoup, Tag
 from datetime import date, datetime, timedelta
 
+from redis.exceptions import RedisError
+
 from tutnext.services.gakuen.errors import (
     GakuenAPIError,
     GakuenLoginError,
@@ -45,6 +47,8 @@ from tutnext.services.gakuen.ids import _MobilePageIds
 import aiohttp
 
 _ROOM_CACHE_TTL = 604800  # 1 week
+
+logger = logging.getLogger(__name__)
 
 
 class GakuenAPI:
@@ -421,13 +425,14 @@ class GakuenAPI:
             )
 
     async def class_bulletin(
-        self, year: int = 0, semester: Literal[0, 1, 2] = 0
+        self, year: int = 0, semester: Literal[0, 1, 2] = 0, skip_login: bool = False
     ) -> dict:
         """クラスデータ取得 (Api loginが必要) Student Only
 
         Args:
             year: 年（省略時は現在の年）
             semester: 学期 [全学期0,春学期1,秋学期2]（省略時は全学期）
+            skip_login: Trueの場合、ログインチェックをスキップする
 
         Raises:
             GakuenAPIError: クラスデータの取得に失敗した場合
@@ -435,7 +440,7 @@ class GakuenAPI:
         Returns:
             dict: クラスデータの辞書。各授業はキーとして授業名を持ち、値は授業情報の辞書。
         """
-        if not self._state.api_is_logged_in:
+        if not skip_login and not self._state.api_is_logged_in:
             raise GakuenPermissionError(
                 "Api ログインが必要です", error_code="NOT_LOGGED_IN"
             )
@@ -739,8 +744,8 @@ class GakuenAPI:
                         await redis.set(
                             f"room:{entry['name']}", entry["room"], ex=_ROOM_CACHE_TTL
                         )
-            except Exception:
-                pass  # Redis 障害時はキャッシュをスキップ
+            except RedisError as e:
+                logger.debug("Redis cache write skipped: %s", e)
 
             return out_data
         except Exception as e:
@@ -1378,8 +1383,8 @@ class GakuenAPI:
                     await redis.set(
                         f"room:{course_name}", info["lessonClass"], ex=_ROOM_CACHE_TTL
                     )
-        except Exception:
-            pass  # Redis 障害時はキャッシュをスキップ
+        except RedisError as e:
+            logger.debug("Redis cache write skipped: %s", e)
 
     async def _call_first_setting(self) -> dict:
         """firstSetting API を呼び出す (api_login 後に必須)
