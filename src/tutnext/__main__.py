@@ -179,6 +179,10 @@ async def run_all():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, signal_handler)
 
+    # 在所有服务启动前初始化数据库连接池（monitor 等后台任务依赖它）
+    from tutnext.core.database import db_manager
+    await db_manager.init_db()
+
     push_manager = PushPoolManager()
     await push_manager.start()
     logger.info("推送池管理器已启动")
