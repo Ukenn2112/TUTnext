@@ -16,6 +16,9 @@ from tutnext.core.database import db_manager
 from tutnext.config import settings
 
 
+_GOOGLE_API_CONCURRENCY = 5
+
+
 class GoogleClassroomAPI:
     """Google Classroom API 异步管理类"""
 
@@ -50,12 +53,12 @@ class GoogleClassroomAPI:
             logging.error(f"Request error: {e}")
             return None
     
-    async def _check_token_validity(self, access_token: str) -> bool:
+    async def _check_token_validity(self, access_token: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
         """检查访问令牌是否有效（token 过期返回 400 属正常情况，不记录为错误）"""
-        async with aiohttp.ClientSession() as session:
+        async def _do_check(s: aiohttp.ClientSession) -> bool:
             url = f"{self.token_info_url}?access_token={access_token}"
             try:
-                async with session.get(url) as response:
+                async with s.get(url) as response:
                     if response.status != 200:
                         return False
                     data = await response.json()
@@ -64,22 +67,27 @@ class GoogleClassroomAPI:
             except Exception as e:
                 logging.error(f"Token validity check error: {e}")
                 return False
+
+        if session is not None:
+            return await _do_check(session)
+        async with aiohttp.ClientSession() as s:
+            return await _do_check(s)
     
-    async def _refresh_access_token(self, username: str, refresh_token: str) -> Optional[str]:
+    async def _refresh_access_token(self, username: str, refresh_token: str, session: Optional[aiohttp.ClientSession] = None) -> Optional[str]:
         """刷新访问令牌"""
-        async with aiohttp.ClientSession() as session:
+        async def _do_refresh(s: aiohttp.ClientSession) -> Optional[str]:
             data = {
                 "client_id": self.client_id,
                 "refresh_token": refresh_token,
                 "grant_type": "refresh_token"
             }
-            
+
             headers = {"Content-Type": "application/x-www-form-urlencoded"}
             response = await self._make_request(
-                session, "POST", self.oauth_url, 
+                s, "POST", self.oauth_url,
                 headers=headers, data=urlencode(data)
             )
-            
+
             if response and "access_token" in response:
                 new_access_token = response["access_token"]
                 # 更新数据库中的令牌
@@ -95,32 +103,37 @@ class GoogleClassroomAPI:
             else:
                 await db_manager.revoke_user_tokens(username)
                 logging.error(f"刷新用户 {username} 访问令牌失败")
-            
+
             return None
+
+        if session is not None:
+            return await _do_refresh(session)
+        async with aiohttp.ClientSession() as s:
+            return await _do_refresh(s)
     
-    async def _get_valid_access_token(self, username: str) -> Optional[str]:
+    async def _get_valid_access_token(self, username: str, session: Optional[aiohttp.ClientSession] = None) -> Optional[str]:
         """获取有效的访问令牌，如果无效则尝试刷新"""
         # 从数据库获取用户令牌
         tokens = await db_manager.get_user_tokens(username)
         if not tokens:
             logging.warning(f"用户 {username} 没有存储的令牌")
             return None
-        
+
         access_token = tokens.get("access_token")
         refresh_token = tokens.get("refresh_token")
-        
+
         if not access_token or not refresh_token:
             await db_manager.revoke_user_tokens(username)
             logging.warning(f"用户 {username} 令牌不完整")
             return None
-        
+
         # 检查访问令牌是否有效
-        if await self._check_token_validity(access_token):
+        if await self._check_token_validity(access_token, session=session):
             return access_token
-        
+
         # 令牌无效，尝试刷新
         logging.info(f"用户 {username} 的访问令牌已过期，正在刷新...")
-        return await self._refresh_access_token(username, refresh_token)
+        return await self._refresh_access_token(username, refresh_token, session=session)
     
     async def _get_active_courses(self, session: aiohttp.ClientSession, access_token: str) -> List[Dict[str, Any]]:
         """获取用户所有活跃课程"""
@@ -142,15 +155,18 @@ class GoogleClassroomAPI:
         headers = {"Authorization": f"Bearer {access_token}"}
         course_work_map = {}
         
-        # 使用异步并发请求
+        sem = asyncio.Semaphore(_GOOGLE_API_CONCURRENCY)
+
+        # 使用异步并发请求（受信号量限流）
         async def fetch_course_work(course_id: str):
-            url = f"{self.base_url}/courses/{course_id}/courseWork"
-            response = await self._make_request(session, "GET", url, headers=headers)
-            if response and "courseWork" in response:
-                course_work_map[course_id] = response["courseWork"]
-            else:
-                course_work_map[course_id] = []
-        
+            async with sem:
+                url = f"{self.base_url}/courses/{course_id}/courseWork"
+                response = await self._make_request(session, "GET", url, headers=headers)
+                if response and "courseWork" in response:
+                    course_work_map[course_id] = response["courseWork"]
+                else:
+                    course_work_map[course_id] = []
+
         # 并发执行所有请求
         tasks = [fetch_course_work(course_id) for course_id in course_ids]
         await asyncio.gather(*tasks)
@@ -167,27 +183,30 @@ class GoogleClassroomAPI:
         headers = {"Authorization": f"Bearer {access_token}"}
         submissions_map = {}
         
+        sem = asyncio.Semaphore(_GOOGLE_API_CONCURRENCY)
+
         async def fetch_submissions(course_work: Dict[str, Any]):
-            course_id = course_work["courseId"]
-            course_work_id = course_work["id"]
-            key = f"{course_id}_{course_work_id}"
-            
-            url = f"{self.base_url}/courses/{course_id}/courseWork/{course_work_id}/studentSubmissions"
-            params = {"states": ["NEW", "CREATED", "RECLAIMED_BY_STUDENT"]}
-            
-            # 构建查询参数
-            query_params = []
-            for state in params["states"]:
-                query_params.append(f"states={state}")
-            query_string = "&".join(query_params)
-            full_url = f"{url}?{query_string}"
-            
-            response = await self._make_request(session, "GET", full_url, headers=headers)
-            if response and "studentSubmissions" in response:
-                submissions_map[key] = response["studentSubmissions"]
-            else:
-                submissions_map[key] = []
-        
+            async with sem:
+                course_id = course_work["courseId"]
+                course_work_id = course_work["id"]
+                key = f"{course_id}_{course_work_id}"
+
+                url = f"{self.base_url}/courses/{course_id}/courseWork/{course_work_id}/studentSubmissions"
+                params = {"states": ["NEW", "CREATED", "RECLAIMED_BY_STUDENT"]}
+
+                # 构建查询参数
+                query_params = []
+                for state in params["states"]:
+                    query_params.append(f"states={state}")
+                query_string = "&".join(query_params)
+                full_url = f"{url}?{query_string}"
+
+                response = await self._make_request(session, "GET", full_url, headers=headers)
+                if response and "studentSubmissions" in response:
+                    submissions_map[key] = response["studentSubmissions"]
+                else:
+                    submissions_map[key] = []
+
         # 并发执行所有请求
         tasks = [fetch_submissions(item) for item in course_work_items]
         await asyncio.gather(*tasks)
@@ -301,28 +320,32 @@ class GoogleClassroomAPI:
                 "error": str(e)
             }
     
-    async def _revoke_token_from_google(self, token: str) -> bool:
+    async def _revoke_token_from_google(self, token: str, session: Optional[aiohttp.ClientSession] = None) -> bool:
         """通过Google API撤销令牌"""
+        async def _do_revoke(s: aiohttp.ClientSession) -> bool:
+            url = "https://oauth2.googleapis.com/revoke"
+            data = {"token": token}
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+            response = await self._make_request(
+                s, "POST", url,
+                headers=headers, data=urlencode(data)
+            )
+
+            # Google撤销API成功时返回200状态码，但响应体为空
+            # 这里我们通过检查是否没有错误来判断成功
+            if response is not None or True:  # Google revoke API返回空响应表示成功
+                logging.info("令牌已通过Google API撤销")
+                return True
+            else:
+                logging.warning("Google API令牌撤销可能失败")
+                return False
+
         try:
-            async with aiohttp.ClientSession() as session:
-                url = "https://oauth2.googleapis.com/revoke"
-                data = {"token": token}
-                headers = {"Content-Type": "application/x-www-form-urlencoded"}
-                
-                response = await self._make_request(
-                    session, "POST", url,
-                    headers=headers, data=urlencode(data)
-                )
-                
-                # Google撤销API成功时返回200状态码，但响应体为空
-                # 这里我们通过检查是否没有错误来判断成功
-                if response is not None or True:  # Google revoke API返回空响应表示成功
-                    logging.info("令牌已通过Google API撤销")
-                    return True
-                else:
-                    logging.warning("Google API令牌撤销可能失败")
-                    return False
-                    
+            if session is not None:
+                return await _do_revoke(session)
+            async with aiohttp.ClientSession() as s:
+                return await _do_revoke(s)
         except Exception as e:
             logging.error(f"通过Google API撤销令牌时出错: {e}")
             return False
@@ -332,13 +355,13 @@ class GoogleClassroomAPI:
         if self.client_id is None:
             logging.warning("Google Classroom client_id is not configured; skipping assignment fetch.")
             return []
-        # 获取有效的访问令牌
-        access_token = await self._get_valid_access_token(username)
-        if not access_token:
-            logging.error(f"无法获取用户 {username} 的有效访问令牌")
-            return []
-        
+
         async with aiohttp.ClientSession() as session:
+            # 获取有效的访问令牌（复用同一个 session）
+            access_token = await self._get_valid_access_token(username, session=session)
+            if not access_token:
+                logging.error(f"无法获取用户 {username} 的有效访问令牌")
+                return []
             try:
                 # 1. 获取所有活跃课程
                 courses = await self._get_active_courses(session, access_token)

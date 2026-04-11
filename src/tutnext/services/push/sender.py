@@ -58,83 +58,87 @@ async def check_tmrw_course_user_push(
 ):
     """处理单个用户的推送任务"""
     try:
-        async with get_session_manager().acquire(username, encryptedPassword) as gakuen:
-            max_retries = 5
-            retry_count = 0
-            while retry_count < max_retries:
-                try:
+        max_retries = 5
+        data = None
+
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    await get_session_manager().invalidate(username)
+                    await asyncio.sleep(2)
+                async with get_session_manager().acquire(username, encryptedPassword) as gakuen:
                     data = await gakuen.get_later_user_schedule(
                         username, encryptedPassword, skip_login=True
                     )
-                    break  # 如果成功获取数据，跳出循环
-                except GakuenAPIError as api_error:
-                    retry_count += 1
-                    if retry_count >= max_retries:
-                        logging.error(
-                            f"用户 {username} 获取课程数据失败，已达最大重试次数: {api_error}"
-                        )
-                        # 只在重试全部失败后才记录API错误
-                        await record_api_error()
-                        raise api_error
-                    logging.warning(
-                        f"用户 {username} 获取课程数据失败，重试第 {retry_count} 次: {api_error}"
+                    break
+            except GakuenAPIError as api_error:
+                if attempt + 1 >= max_retries:
+                    logging.error(
+                        f"用户 {username} 获取课程数据失败，已达最大重试次数: {api_error}"
                     )
-                    # 重试前让 session manager 失效缓存，下次 acquire 会重新登录
-                    await get_session_manager().invalidate(username)
-                    await asyncio.sleep(2)  # 等待2秒后重试
-            # if all_day_events := data["all_day_events"]:
-            #     for event in all_day_events:
-            #         if "SMIS:授業" in event["title"]:
-            #             await push_manager.add_message_to_pool(
-            #                 "night_9pm",
-            #                 deviceToken,
-            #                 "明日の授業のお知らせ",
-            #                 event["title"],
-            #             )
-            #             await push_manager.add_message_to_pool(
-            #                 "morning_7am",
-            #                 deviceToken,
-            #                 "本日の授業のお知らせ",
-            #                 event["title"],
-            #             )
-            #             continue
-            if not data["time_table"]:
-                logging.info(f"用户 {username} 没有课程数据")
-                return
-
-            has_changes = False
-            for t in data["time_table"]:
-                if "special_tags" in t:
-                    if "休講" in t["special_tags"]:
-                        # 即時通知のみ（課前アラートは Live Activity が代替）
-                        await push_manager.add_message_to_pool(
-                            "realtime",
-                            deviceToken,
-                            "明日の授業の休講お知らせ",
-                            f"明日の「{t['name']}」授業は休講となります。",
-                            data={"toPage": "timetable"},
-                        )
-                        has_changes = True
-                        continue
-                elif "previous_room" not in t:
-                    continue
-                t["room"] = t["room"].replace("教室", "")
-                # 即時 background push（Timetable UI の教室標注用 — 維持）
-                push_data = {
-                    "updateType": "roomChange",
-                    "name": t["name"],
-                    "room": f"({t['room']})",
-                }
-                await push_manager.add_background_message_to_pool(
-                    "realtime", deviceToken, push_data
+                    # 只在重试全部失败后才记录API错误
+                    await record_api_error()
+                    raise api_error
+                logging.warning(
+                    f"用户 {username} 获取课程数据失败，重试第 {attempt + 1} 次: {api_error}"
                 )
-                # 課前アラート push は Live Activity が代替するため削除
-                has_changes = True
-            # 检测到课程变更（休講或教室変更）时，清除该用户的日程缓存，确保下次请求返回最新数据
-            if has_changes:
-                await redis.delete(f"schedule:ical:{username}")
-                logging.info(f"用户 {username} 的日程缓存已清除")
-            logging.info(f"用户 {username} 的推送教室变更消息已添加到推送池")
+
+        if data is None:
+            return
+
+        # if all_day_events := data["all_day_events"]:
+        #     for event in all_day_events:
+        #         if "SMIS:授業" in event["title"]:
+        #             await push_manager.add_message_to_pool(
+        #                 "night_9pm",
+        #                 deviceToken,
+        #                 "明日の授業のお知らせ",
+        #                 event["title"],
+        #             )
+        #             await push_manager.add_message_to_pool(
+        #                 "morning_7am",
+        #                 deviceToken,
+        #                 "本日の授業のお知らせ",
+        #                 event["title"],
+        #             )
+        #             continue
+        if not data["time_table"]:
+            logging.info(f"用户 {username} 没有课程数据")
+            return
+
+        has_changes = False
+        for t in data["time_table"]:
+            if "special_tags" in t:
+                if "休講" in t["special_tags"]:
+                    # 即時通知のみ（課前アラートは Live Activity が代替）
+                    await push_manager.add_message_to_pool(
+                        "realtime",
+                        deviceToken,
+                        "明日の授業の休講お知らせ",
+                        f"明日の「{t['name']}」授業は休講となります。",
+                        data={"toPage": "timetable"},
+                    )
+                    has_changes = True
+                    continue
+            elif "previous_room" not in t:
+                continue
+            t["room"] = t["room"].replace("教室", "")
+            # 即時 background push（Timetable UI の教室標注用 — 維持）
+            push_data = {
+                "updateType": "roomChange",
+                "name": t["name"],
+                "room": f"({t['room']})",
+            }
+            await push_manager.add_background_message_to_pool(
+                "realtime", deviceToken, push_data
+            )
+            # 課前アラート push は Live Activity が代替するため削除
+            has_changes = True
+        # 检测到课程变更（休講或教室変更）时，清除该用户的日程缓存，确保下次请求返回最新数据
+        if has_changes:
+            await redis.delete(f"schedule:ical:{username}")
+            logging.info(f"用户 {username} 的日程缓存已清除")
+        logging.info(f"用户 {username} 的推送教室变更消息已添加到推送池")
     except Exception as e:
         logging.error(f"处理用户 {username} 时出错: {e}")
 

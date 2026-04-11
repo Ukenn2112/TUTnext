@@ -64,6 +64,13 @@ class DatabaseManager:
                     if deleted != "DELETE 0":
                         logging.warning(f"启动清理：已删除无效用户记录 ({deleted})")
 
+                    # 为 deviceToken 创建索引，加速按设备token查询/删除
+                    await conn.execute(
+                        """
+                    CREATE INDEX IF NOT EXISTS idx_users_devicetoken ON users (deviceToken);
+                    """
+                    )
+
                     # 添加 CHECK 约束，防止今后写入空字符串（已存在则忽略）
                     await conn.execute(
                         """
@@ -94,18 +101,16 @@ class DatabaseManager:
 
     async def get_all_users(self) -> List[Dict[str, Any]]:
         """获取所有用户"""
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         async with self._pool.acquire() as conn:
             rows = await conn.fetch("SELECT * FROM users")
             return [dict(row) for row in rows]
 
     async def get_user(self, username: str) -> Optional[Dict[str, Any]]:
         """根据用户名获取用户"""
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM users WHERE username = $1", username
@@ -119,16 +124,15 @@ class DatabaseManager:
         if not username or not encrypted_password or not device_token:
             logging.warning(f"拒绝写入：用户名、密码或设备Token为空 (username={repr(username)})")
             return False
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         try:
             async with self._pool.acquire() as conn:
                 # 使用 ON CONFLICT 来处理插入或更新
                 await conn.execute(
-                    """INSERT INTO users (username, encryptedPassword, deviceToken) 
+                    """INSERT INTO users (username, encryptedPassword, deviceToken)
                        VALUES ($1, $2, $3)
-                       ON CONFLICT (username) 
+                       ON CONFLICT (username)
                        DO UPDATE SET encryptedPassword = $2, deviceToken = $3""",
                     username,
                     encrypted_password,
@@ -141,20 +145,14 @@ class DatabaseManager:
 
     async def delete_user(self, username: str) -> bool:
         """删除用户"""
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         try:
             async with self._pool.acquire() as conn:
-                # 检查用户是否存在
-                user = await conn.fetchrow(
-                    "SELECT * FROM users WHERE username = $1", username
-                )
-                if not user:
+                result = await conn.execute("DELETE FROM users WHERE username = $1", username)
+                if result == "DELETE 0":
                     logging.info(f"用户 {username} 不存在，跳过删除")
                     return False
-
-                await conn.execute("DELETE FROM users WHERE username = $1", username)
                 logging.info(f"用户 {username} 已被删除")
             return True
         except Exception as e:
@@ -163,9 +161,8 @@ class DatabaseManager:
 
     async def delete_user_by_device_token(self, device_token: str) -> bool:
         """根据设备token删除用户"""
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         try:
             async with self._pool.acquire() as conn:
                 await conn.execute(
@@ -182,9 +179,8 @@ class DatabaseManager:
         self, username: str, access_token: str, refresh_token: str
     ) -> bool:
         """插入或更新用户OAuth令牌"""
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         try:
             async with self._pool.acquire() as conn:
                 # 使用 ON CONFLICT 来处理插入或更新
@@ -205,20 +201,14 @@ class DatabaseManager:
 
     async def revoke_user_tokens(self, username: str) -> bool:
         """撤销用户OAuth令牌"""
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         try:
             async with self._pool.acquire() as conn:
-                # 检查用户是否存在
-                user_tokens = await conn.fetchrow(
-                    "SELECT * FROM user_tokens WHERE username = $1", username
-                )
-                if not user_tokens:
+                result = await conn.execute("DELETE FROM user_tokens WHERE username = $1", username)
+                if result == "DELETE 0":
                     logging.info(f"用户 {username} 的令牌不存在，跳过撤销")
                     return False
-
-                await conn.execute("DELETE FROM user_tokens WHERE username = $1", username)
                 logging.info(f"用户 {username} 的令牌已被撤销")
             return True
         except Exception as e:
@@ -227,9 +217,8 @@ class DatabaseManager:
 
     async def get_user_tokens_status(self, username: str) -> Optional[Dict[str, Any]]:
         """获取用户OAuth令牌状态"""
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
@@ -264,9 +253,8 @@ class DatabaseManager:
 
     async def get_user_tokens(self, username: str) -> Optional[Dict[str, Optional[str]]]:
         """获取用户的OAuth令牌"""
-        await self.init_db()
         if not self._pool:
-            raise RuntimeError("数据库连接池未初始化")
+            raise RuntimeError("数据库连接池未初始化，请先调用 init_db()")
         try:
             async with self._pool.acquire() as conn:
                 row = await conn.fetchrow(
