@@ -172,18 +172,29 @@ class MonitorService:
             f"[Layer 5] {trigger_username} 变更 → 立即检查 {len(to_check)} 个同课程用户"
         )
 
-        # 从数据库获取凭据并立即检查（仍受 semaphore 限流）
-        tasks = []
+        # 从数据库获取凭据，使用独立的高并发信号量立即检查
+        classmates = []
         for uname in to_check:
             user = await db_manager.get_user(uname)
             if user:
-                tasks.append(
-                    self.check_single_user(
-                        uname, user["encryptedpassword"], user["devicetoken"]
-                    )
+                classmates.append(user)
+
+        if not classmates:
+            return
+
+        burst_sem = asyncio.Semaphore(settings.classmate_max_concurrent)
+
+        async def _burst_check(user_row: dict) -> bool:
+            async with burst_sem:
+                return await self._check_user_core(
+                    user_row["username"],
+                    user_row["encryptedpassword"],
+                    user_row["devicetoken"],
                 )
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+
+        await asyncio.gather(
+            *[_burst_check(u) for u in classmates], return_exceptions=True
+        )
 
     # ------------------------------------------------------------------
     # Core per-user check (ports monitor_task logic from sender.py)
@@ -192,122 +203,127 @@ class MonitorService:
     async def check_single_user(
         self, username: str, encrypted_password: str, device_token: str
     ) -> bool:
-        """检查单个用户的作业变化，通过信号量限制并发登录数（Layer 1）。
+        """检查单个用户的作业变化，通过信号量限制并发登录数（Layer 1）。"""
+        async with self.semaphore:
+            return await self._check_user_core(username, encrypted_password, device_token)
+
+    async def _check_user_core(
+        self, username: str, encrypted_password: str, device_token: str
+    ) -> bool:
+        """检查单个用户作业变化的核心逻辑（不含信号量，由调用方控制并发）。
 
         Returns:
-            bool: 是否检测到作业变化（用于 Layer 5 触发同课程用户检查）。
+            bool: 是否检测到作业变化。
         """
-        # Layer 1: 信号量保证同一时刻最多 N 个并发登录
-        async with self.semaphore:
-            try:
-                max_retries = 5
-                kadai_list = None
+        try:
+            max_retries = 5
+            kadai_list = None
 
-                for attempt in range(max_retries):
-                    try:
-                        if attempt > 0:
-                            await get_session_manager().invalidate(username)
-                            await asyncio.sleep(2)
-                        async with get_session_manager().acquire(username, encrypted_password) as gakuen:
-                            kadai_list = await gakuen.get_user_kadai(
-                                username, encrypted_password, skip_login=True
-                            )
-                            if await db_manager.get_user_tokens(username):
-                                classroom_kadai_list = (
-                                    await classroom_api.get_user_assignments(username)
-                                )
-                                if classroom_kadai_list:
-                                    kadai_list.extend(classroom_kadai_list)
-                            break
-                    except GakuenPermissionError as perm_error:
-                        logger.warning(
-                            f"用户 {username} 凭据无效，跳过: {perm_error}"
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        await get_session_manager().invalidate(username)
+                        await asyncio.sleep(2)
+                    async with get_session_manager().acquire(username, encrypted_password) as gakuen:
+                        kadai_list = await gakuen.get_user_kadai(
+                            username, encrypted_password, skip_login=True
                         )
+                        if await db_manager.get_user_tokens(username):
+                            classroom_kadai_list = (
+                                await classroom_api.get_user_assignments(username)
+                            )
+                            if classroom_kadai_list:
+                                kadai_list.extend(classroom_kadai_list)
+                        break
+                except GakuenPermissionError as perm_error:
+                    logger.warning(
+                        f"用户 {username} 凭据无效，跳过: {perm_error}"
+                    )
+                    return False
+                except Exception as api_error:
+                    if "パスワードが正しくありません" in str(api_error):
+                        logger.warning(
+                            f"用户 {username} 密码错误，删除用户: {api_error}"
+                        )
+                        await db_manager.delete_user(username)
                         return False
-                    except Exception as api_error:
-                        if "パスワードが正しくありません" in str(api_error):
+                    if attempt + 1 >= max_retries:
+                        if "セッション情報の抽出に失敗しました" in str(api_error):
                             logger.warning(
-                                f"用户 {username} 密码错误，删除用户: {api_error}"
+                                f"用户 {username} 会话信息无效，可能密码错误，删除用户: {api_error}"
                             )
                             await db_manager.delete_user(username)
                             return False
-                        if attempt + 1 >= max_retries:
-                            if "セッション情報の抽出に失敗しました" in str(api_error):
-                                logger.warning(
-                                    f"用户 {username} 会话信息无效，可能密码错误，删除用户: {api_error}"
-                                )
-                                await db_manager.delete_user(username)
-                                return False
-                            logger.error(
-                                f"用户 {username} 获取作业数据失败，已达最大重试次数: {api_error}"
-                            )
-                            from tutnext.services.push.sender import record_api_error
-                            await record_api_error()
-                            raise api_error
-                        logger.warning(
-                            f"用户 {username} 获取作业数据失败，重试第 {attempt + 1} 次: {api_error}"
+                        logger.error(
+                            f"用户 {username} 获取作业数据失败，已达最大重试次数: {api_error}"
                         )
+                        from tutnext.services.push.sender import record_api_error
+                        await record_api_error()
+                        raise api_error
+                    logger.warning(
+                        f"用户 {username} 获取作业数据失败，重试第 {attempt + 1} 次: {api_error}"
+                    )
 
-                if kadai_list is None:
-                    return False
+            if kadai_list is None:
+                return False
 
-                # Layer 5: 从作业列表补充用户课程缓存（自举）
-                await self._cache_user_courses_from_kadai(username, kadai_list)
+            # Layer 5: 从作业列表补充用户课程缓存（自举）
+            await self._cache_user_courses_from_kadai(username, kadai_list)
 
-                # --- 对比作业数量，决定是否推送 ---
-                changed = False
-                kadai_count_key = f"kadai_count:{username}"
+            # --- 对比作业数量，决定是否推送 ---
+            changed = False
+            kadai_count_key = f"kadai_count:{username}"
 
-                if await redis.exists(kadai_count_key):
-                    old_count = int(await redis.get(kadai_count_key))
-                    if len(kadai_list) == 0:
-                        await redis.delete(kadai_count_key)
-                        changed = True
-                        await self.push_manager.add_background_message_to_pool(
-                            "realtime",
-                            device_token,
-                            {"updateType": "kaidaiNumChange", "num": 0},
-                        )
-                    elif old_count != len(kadai_list):
-                        await redis.set(kadai_count_key, len(kadai_list))
-                        changed = True
-                        await self.push_manager.add_background_message_to_pool(
-                            "realtime",
-                            device_token,
-                            {
-                                "updateType": "kaidaiNumChange",
-                                "num": len(kadai_list),
-                            },
-                        )
-                else:
-                    if len(kadai_list) > 0:
-                        await redis.set(kadai_count_key, len(kadai_list))
-                        changed = True
-                        await self.push_manager.add_background_message_to_pool(
-                            "realtime",
-                            device_token,
-                            {
-                                "updateType": "kaidaiNumChange",
-                                "num": len(kadai_list),
-                            },
-                        )
+            if await redis.exists(kadai_count_key):
+                old_count = int(await redis.get(kadai_count_key))
+                if len(kadai_list) == 0:
+                    await redis.delete(kadai_count_key)
+                    changed = True
+                    await self.push_manager.add_background_message_to_pool(
+                        "realtime",
+                        device_token,
+                        {"updateType": "kaidaiNumChange", "num": 0},
+                    )
+                elif old_count != len(kadai_list):
+                    await redis.set(kadai_count_key, len(kadai_list))
+                    changed = True
+                    await self.push_manager.add_background_message_to_pool(
+                        "realtime",
+                        device_token,
+                        {
+                            "updateType": "kaidaiNumChange",
+                            "num": len(kadai_list),
+                        },
+                    )
+            else:
+                if len(kadai_list) > 0:
+                    await redis.set(kadai_count_key, len(kadai_list))
+                    changed = True
+                    await self.push_manager.add_background_message_to_pool(
+                        "realtime",
+                        device_token,
+                        {
+                            "updateType": "kaidaiNumChange",
+                            "num": len(kadai_list),
+                        },
+                    )
 
-                # Layer 3: 记录退避结果
-                await self.record_check_result(username, changed)
+            # Layer 3: 记录退避结果
+            await self.record_check_result(username, changed)
 
-                if not kadai_list:
-                    logger.info(f"用户 {username} 没有作业")
-                    return changed
-
-                await redis.set(
-                    f"{username}:kadai", json.dumps(kadai_list), ex=120
-                )
-                logger.info(f"用户 {username} 的作业监测任务已完成")
+            if not kadai_list:
+                logger.info(f"用户 {username} 没有作业")
                 return changed
 
-            except Exception as e:
-                logger.error(f"处理用户 {username} 时出错: {e}")
-                return False
+            await redis.set(
+                f"{username}:kadai", json.dumps(kadai_list), ex=120
+            )
+            logger.info(f"用户 {username} 的作业监测任务已完成")
+            return changed
+
+        except Exception as e:
+            logger.error(f"处理用户 {username} 时出错: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # Main cycle

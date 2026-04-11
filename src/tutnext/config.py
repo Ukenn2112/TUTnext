@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     # --- Monitor tuning ---
     monitor_max_concurrent: int = 3
     monitor_interval_seconds: int = 300
+    classmate_max_concurrent: int = 50  # Layer 5 同班即时检查并发上限
 
     # --- Feature toggles ---
     enable_monitor_push: bool = True
