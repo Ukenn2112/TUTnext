@@ -138,7 +138,7 @@ class GoogleClassroomAPI:
     async def _get_active_courses(self, session: aiohttp.ClientSession, access_token: str) -> List[Dict[str, Any]]:
         """获取用户所有活跃课程"""
         headers = {"Authorization": f"Bearer {access_token}"}
-        url = f"{self.base_url}/courses?courseStates=ACTIVE"
+        url = f"{self.base_url}/courses?courseStates=ACTIVE&fields=courses(id,name)"
         
         response = await self._make_request(session, "GET", url, headers=headers)
         if response and "courses" in response:
@@ -160,7 +160,7 @@ class GoogleClassroomAPI:
         # 使用异步并发请求（受信号量限流）
         async def fetch_course_work(course_id: str):
             async with sem:
-                url = f"{self.base_url}/courses/{course_id}/courseWork"
+                url = f"{self.base_url}/courses/{course_id}/courseWork?fields=courseWork(id,courseId,title,dueDate,dueTime,description,alternateLink)"
                 response = await self._make_request(session, "GET", url, headers=headers)
                 if response and "courseWork" in response:
                     course_work_map[course_id] = response["courseWork"]
@@ -177,40 +177,30 @@ class GoogleClassroomAPI:
         self,
         session: aiohttp.ClientSession,
         access_token: str,
-        course_work_items: List[Dict[str, Any]]
+        course_ids: List[str],
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """批处理获取课题的学生提交状态"""
+        """按课程批量获取未完成的学生提交状态（使用 courseWorkId="-" 通配符）"""
         headers = {"Authorization": f"Bearer {access_token}"}
-        submissions_map = {}
-        
+        submissions_map: Dict[str, List[Dict[str, Any]]] = {}
+
         sem = asyncio.Semaphore(_GOOGLE_API_CONCURRENCY)
 
-        async def fetch_submissions(course_work: Dict[str, Any]):
+        async def fetch_course_submissions(course_id: str):
             async with sem:
-                course_id = course_work["courseId"]
-                course_work_id = course_work["id"]
-                key = f"{course_id}_{course_work_id}"
-
-                url = f"{self.base_url}/courses/{course_id}/courseWork/{course_work_id}/studentSubmissions"
-                params = {"states": ["NEW", "CREATED", "RECLAIMED_BY_STUDENT"]}
-
-                # 构建查询参数
-                query_params = []
-                for state in params["states"]:
-                    query_params.append(f"states={state}")
-                query_string = "&".join(query_params)
-                full_url = f"{url}?{query_string}"
-
-                response = await self._make_request(session, "GET", full_url, headers=headers)
+                url = (
+                    f"{self.base_url}/courses/{course_id}/courseWork/-/studentSubmissions"
+                    f"?states=NEW&states=CREATED&states=RECLAIMED_BY_STUDENT"
+                    f"&fields=studentSubmissions(courseWorkId,courseId,state)"
+                )
+                response = await self._make_request(session, "GET", url, headers=headers)
                 if response and "studentSubmissions" in response:
-                    submissions_map[key] = response["studentSubmissions"]
-                else:
-                    submissions_map[key] = []
+                    for sub in response["studentSubmissions"]:
+                        key = f"{course_id}_{sub.get('courseWorkId', '')}"
+                        submissions_map.setdefault(key, []).append(sub)
 
-        # 并发执行所有请求
-        tasks = [fetch_submissions(item) for item in course_work_items]
+        tasks = [fetch_course_submissions(cid) for cid in course_ids]
         await asyncio.gather(*tasks)
-        
+
         return submissions_map
     
     def _format_due_datetime(self, due_date: Optional[Dict[str, int]], due_time: Optional[Dict[str, int]] = None) -> tuple:
@@ -417,9 +407,10 @@ class GoogleClassroomAPI:
                 
                 logging.info(f"用户 {username} 有 {len(course_work_with_due)} 个有截止时间的课题")
                 
-                # 4. 批处理获取课题的学生提交状态
+                # 4. 按课程批量获取未完成提交（通配符方式，N 次请求代替 M 次）
+                course_ids_with_due = list({cw["courseId"] for cw in course_work_with_due})
                 submissions_map = await self._get_student_submissions_batch(
-                    session, access_token, course_work_with_due
+                    session, access_token, course_ids_with_due
                 )
                 
                 # 5. 汇总结果
