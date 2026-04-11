@@ -18,11 +18,11 @@ MonitorService — 限速版用户作业监测服务
       将本轮所有用户的检查请求均匀分散到整个监测间隔内，
       而非同时发起，避免形成流量峰值。
 
-  Layer 5: 课程关联变更传播 (Course-Correlated Change Propagation)
-      当某用户检测到作业变化时，将其所在课程标记为"热点"。
-      下一轮监测中，同课程的其他用户即使处于退避窗口也会被优先检查。
-      这利用了"老师布置作业 → 同班所有学生同时收到"的特性，
-      使全班推送延迟从最差 30 分钟缩短到 ~5 分钟。
+  Layer 5: 课程关联即时传播 (Course-Correlated Immediate Propagation)
+      当某用户检测到作业变化时，通过反向索引 course_users:{课程名} 立即找到
+      同课程的其他用户，在同一轮内触发检查。
+      利用"老师布置作业 → 同班所有学生同时收到"的特性，
+      全班推送延迟从最差 30 分钟缩短到 ~30 秒。
 """
 # tutnext/services/push/monitor.py
 
@@ -59,11 +59,10 @@ class MonitorService:
     BACKOFF_INTERVALS = [300, 600, 1200, 1800]
     BACKOFF_KEY_PREFIX = "monitor:backoff:"
 
-    # Layer 5: 课程关联变更传播
-    HOT_COURSE_PREFIX = "hot_course:"
-    HOT_COURSE_TTL = 600  # 热点课程标记保留 10 分钟
+    # Layer 5: 课程关联即时传播
     USER_COURSES_PREFIX = "user_courses:"
-    USER_COURSES_TTL = 86400  # 用户课程列表缓存 24 小时
+    COURSE_USERS_PREFIX = "course_users:"  # 反向索引：课程 → 用户集合
+    COURSE_INDEX_TTL = 86400  # 正向/反向索引缓存 24 小时
 
     def __init__(self, push_manager: PushPoolManager):
         self.push_manager = push_manager
@@ -101,8 +100,6 @@ class MonitorService:
         if changed:
             # 有变化 → 重置退避，下次立即检查
             await redis.delete(backoff_key)
-            # Layer 5: 标记该用户的课程为热点，同课程的其他用户将被优先检查
-            await self._mark_courses_hot(username)
         else:
             # 无变化 → 递增退避计数
             await redis.incr(backoff_key)
@@ -116,44 +113,77 @@ class MonitorService:
         await redis.set(last_check_key, "1", ex=interval)
 
     # ------------------------------------------------------------------
-    # Layer 5 helpers: 课程关联变更传播
+    # Layer 5 helpers: 课程关联即时传播
     # ------------------------------------------------------------------
 
-    async def _has_hot_course(self, username: str) -> bool:
-        """检查用户是否有处于"热点"状态的课程（SMEMBERS + MGET，共 2 次 Redis 调用）。"""
-        courses = await redis.smembers(f"{self.USER_COURSES_PREFIX}{username}")
-        if not courses:
-            return False
-        hot_keys = [
-            f"{self.HOT_COURSE_PREFIX}{(c if isinstance(c, str) else c.decode())}"
-            for c in courses
-        ]
-        values = await redis.mget(*hot_keys)
-        return any(v is not None for v in values)
-
-    async def _mark_courses_hot(self, username: str):
-        """将用户所在的所有课程标记为热点（pipeline 批量写入）。"""
-        courses = await redis.smembers(f"{self.USER_COURSES_PREFIX}{username}")
-        if not courses:
+    async def _update_course_index(self, username: str, course_names: set[str]):
+        """更新正向索引 user_courses + 反向索引 course_users（pipeline 批量写入）。"""
+        if not course_names:
             return
         pipe = redis.pipeline()
-        for c in courses:
-            cn = c if isinstance(c, str) else c.decode()
-            pipe.set(f"{self.HOT_COURSE_PREFIX}{cn}", "1", ex=self.HOT_COURSE_TTL)
+        # 正向：user → courses
+        fwd_key = f"{self.USER_COURSES_PREFIX}{username}"
+        pipe.sadd(fwd_key, *course_names)
+        pipe.expire(fwd_key, self.COURSE_INDEX_TTL)
+        # 反向：course → users
+        for cn in course_names:
+            rev_key = f"{self.COURSE_USERS_PREFIX}{cn}"
+            pipe.sadd(rev_key, username)
+            pipe.expire(rev_key, self.COURSE_INDEX_TTL)
         await pipe.execute()
 
     async def _cache_user_courses_from_kadai(self, username: str, kadai_list: list):
-        """从作业列表中提取课程名并补充到用户课程缓存（增量添加）。"""
+        """从作业列表中提取课程名并更新正向/反向索引。"""
         course_names = {
             item.get("courseName") or item.get("courseSemesterName", "")
             for item in kadai_list
         }
         course_names.discard("")
-        if not course_names:
+        await self._update_course_index(username, course_names)
+
+    async def _trigger_classmate_checks(self, trigger_username: str):
+        """通过反向索引找到同课程的同学，立即触发检查（Layer 5 核心）。"""
+        courses = await redis.smembers(f"{self.USER_COURSES_PREFIX}{trigger_username}")
+        if not courses:
             return
-        key = f"{self.USER_COURSES_PREFIX}{username}"
-        await redis.sadd(key, *course_names)
-        await redis.expire(key, self.USER_COURSES_TTL)
+
+        # 收集所有同课程用户（去重 + 排除触发者自身）
+        classmate_set: set[str] = set()
+        for c in courses:
+            cn = c if isinstance(c, str) else c.decode()
+            members = await redis.smembers(f"{self.COURSE_USERS_PREFIX}{cn}")
+            for m in members:
+                classmate_set.add(m if isinstance(m, str) else m.decode())
+        classmate_set.discard(trigger_username)
+
+        if not classmate_set:
+            return
+
+        # 过滤：跳过刚检查过的用户（避免同一轮重复检查）
+        to_check: list[str] = []
+        for uname in classmate_set:
+            if not await redis.exists(f"monitor:last_check:{uname}"):
+                to_check.append(uname)
+
+        if not to_check:
+            return
+
+        logger.info(
+            f"[Layer 5] {trigger_username} 变更 → 立即检查 {len(to_check)} 个同课程用户"
+        )
+
+        # 从数据库获取凭据并立即检查（仍受 semaphore 限流）
+        tasks = []
+        for uname in to_check:
+            user = await db_manager.get_user(uname)
+            if user:
+                tasks.append(
+                    self.check_single_user(
+                        uname, user["encryptedpassword"], user["devicetoken"]
+                    )
+                )
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # Core per-user check (ports monitor_task logic from sender.py)
@@ -161,10 +191,11 @@ class MonitorService:
 
     async def check_single_user(
         self, username: str, encrypted_password: str, device_token: str
-    ):
+    ) -> bool:
         """检查单个用户的作业变化，通过信号量限制并发登录数（Layer 1）。
 
-        逻辑与原 monitor_task() 完全一致，额外加入退避状态更新。
+        Returns:
+            bool: 是否检测到作业变化（用于 Layer 5 触发同课程用户检查）。
         """
         # Layer 1: 信号量保证同一时刻最多 N 个并发登录
         async with self.semaphore:
@@ -192,21 +223,21 @@ class MonitorService:
                         logger.warning(
                             f"用户 {username} 凭据无效，跳过: {perm_error}"
                         )
-                        return
+                        return False
                     except Exception as api_error:
                         if "パスワードが正しくありません" in str(api_error):
                             logger.warning(
                                 f"用户 {username} 密码错误，删除用户: {api_error}"
                             )
                             await db_manager.delete_user(username)
-                            return
+                            return False
                         if attempt + 1 >= max_retries:
                             if "セッション情報の抽出に失敗しました" in str(api_error):
                                 logger.warning(
                                     f"用户 {username} 会话信息无效，可能密码错误，删除用户: {api_error}"
                                 )
                                 await db_manager.delete_user(username)
-                                return
+                                return False
                             logger.error(
                                 f"用户 {username} 获取作业数据失败，已达最大重试次数: {api_error}"
                             )
@@ -218,7 +249,7 @@ class MonitorService:
                         )
 
                 if kadai_list is None:
-                    return
+                    return False
 
                 # Layer 5: 从作业列表补充用户课程缓存（自举）
                 await self._cache_user_courses_from_kadai(username, kadai_list)
@@ -266,15 +297,17 @@ class MonitorService:
 
                 if not kadai_list:
                     logger.info(f"用户 {username} 没有作业")
-                    return
+                    return changed
 
                 await redis.set(
                     f"{username}:kadai", json.dumps(kadai_list), ex=120
                 )
                 logger.info(f"用户 {username} 的作业监测任务已完成")
+                return changed
 
             except Exception as e:
                 logger.error(f"处理用户 {username} 时出错: {e}")
+                return False
 
     # ------------------------------------------------------------------
     # Main cycle
@@ -296,32 +329,19 @@ class MonitorService:
             logger.info("没有用户需要监测")
             return
 
-        # Layer 3 + 5: 分类用户
-        hot_users = []      # 退避中但有热点课程 → 拉入优先检查
-        normal_users = []   # 退避到期或从未退避 → 正常检查
+        # Layer 3: 过滤退避中的用户
+        users_to_check = []
         for user in users:
-            username = user["username"]
-            if await self.should_check_user(username):
-                normal_users.append(user)
-            elif await self._has_hot_course(username):
-                hot_users.append(user)
-            # else: 退避中且无热点课程 → 跳过
-
-        users_to_check = hot_users + normal_users
+            if await self.should_check_user(user["username"]):
+                users_to_check.append(user)
 
         if not users_to_check:
             logger.info("所有用户处于退避窗口内，跳过本轮监测")
             return
 
-        if hot_users:
-            logger.info(
-                f"本轮监测 {len(users_to_check)}/{len(users)} 个用户"
-                f"（其中 {len(hot_users)} 个因热点课程优先拉入）"
-            )
-        else:
-            logger.info(
-                f"本轮监测 {len(users_to_check)}/{len(users)} 个用户"
-            )
+        logger.info(
+            f"本轮监测 {len(users_to_check)}/{len(users)} 个用户"
+        )
 
         # Layer 4: 将检查请求均匀分散到整个间隔内，避免同时发起 N 个登录
         tasks = []
@@ -342,11 +362,14 @@ class MonitorService:
             logger.debug(f"静默时段，跳过用户 {user['username']} 的检查")
             return
         try:
-            await self.check_single_user(
+            changed = await self.check_single_user(
                 user["username"],
                 user["encryptedpassword"],
                 user["devicetoken"],
             )
+            # Layer 5: 变更检测到 → 立即检查同课程的同学
+            if changed:
+                await self._trigger_classmate_checks(user["username"])
         except GakuenLoginError as e:
             if "パスワードが正しくありません" in str(e):
                 logger.warning(

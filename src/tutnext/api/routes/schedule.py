@@ -248,14 +248,19 @@ async def get_class_bulletin_with_room(data: ClassBulletinRequest, response: Res
     finally:
         await gakuen.close()
 
-    # 2. ユーザーの全授業名を Redis にキャッシュ（モニター優先度スケジューリング用）
+    # 2. ユーザーの全授業名を Redis にキャッシュ（モニター課程関連即時伝播用）
     jgkm_list = result.get("jgkmDtoList", [])
     course_names = [item["jugyoName"] for item in jgkm_list if item.get("jugyoName")]
     if course_names:
         user_courses_key = f"user_courses:{username}"
-        await redis.delete(user_courses_key)
-        await redis.sadd(user_courses_key, *course_names)
-        await redis.expire(user_courses_key, 86400)
+        pipe = redis.pipeline()
+        pipe.delete(user_courses_key)
+        pipe.sadd(user_courses_key, *course_names)
+        pipe.expire(user_courses_key, 86400)
+        for cn in course_names:
+            pipe.sadd(f"course_users:{cn}", username)
+            pipe.expire(f"course_users:{cn}", 86400)
+        await pipe.execute()
 
     missing_rooms: list[str] = []
     for item in jgkm_list:
