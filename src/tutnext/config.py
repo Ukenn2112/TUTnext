@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # --- Gakuen ---
     gakuen_base_url: str = "https://next.tama.ac.jp"
 
+    # --- Lima proxy watchdog ---
+    lima_vm_name: Optional[str] = None
+    watchdog_window_seconds: float = 180.0
+    watchdog_failure_threshold: int = 5
+    watchdog_cooldown_seconds: float = 900.0
+
     @field_validator("log_level")
     @classmethod
     def normalise_log_level(cls, v: str) -> str:

@@ -183,6 +183,10 @@ async def run_all():
     from tutnext.core.database import db_manager
     await db_manager.init_db()
 
+    # 初始化代理自愈看门狗（配置不全时内部自动禁用）
+    from tutnext.services.watchdog import init_watchdog
+    init_watchdog()
+
     push_manager = PushPoolManager()
     await push_manager.start()
     logger.info("推送池管理器已启动")

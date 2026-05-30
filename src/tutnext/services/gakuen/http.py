@@ -42,6 +42,11 @@ class _HttpClient:
                 method, url, data=data, json=_json, params=params, proxy=self.http_proxy
             ) as response:
                 if response.status != 200:
+                    # 代理或目标返回 5xx → 上报看门狗（由 TCP 探针辨别真伪）
+                    if self.http_proxy and response.status >= 500:
+                        self._report_proxy_failure(
+                            f"HTTP {response.status} via proxy"
+                        )
                     if response_type == "json":
                         _error = True
                     else:
@@ -78,10 +83,26 @@ class _HttpClient:
                     return out_json
                 return BeautifulSoup(html, features)
         except aiohttp.ClientError as e:
+            # 代理不可达 / 连接被拒等典型代理故障 → 上报看门狗
+            if self.http_proxy:
+                self._report_proxy_failure(str(e))
             raise GakuenNetworkError(
                 f"ネットワークエラー: {str(e)}",
                 error_code="NETWORK_ERROR",
             ) from e
+
+    @staticmethod
+    def _report_proxy_failure(reason: str) -> None:
+        """通知代理看门狗一次网络失败（永不抛异常，永不阻塞调用方）。"""
+        try:
+            from tutnext.services.watchdog import get_watchdog
+
+            wd = get_watchdog()
+            if wd is not None:
+                wd.report_failure(reason)
+        except Exception:  # noqa: BLE001
+            # 看门狗任何故障都不得影响 HTTP 请求路径
+            pass
 
     async def close(self) -> None:
         """セッションを閉じる"""
