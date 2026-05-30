@@ -17,6 +17,10 @@ from tutnext.config import settings, redis
 
 
 _GOOGLE_API_CONCURRENCY = 10
+# 整个进程对 Google API 的 TCP 连接上限。监测在 burst 时会有大量用户并行，
+# 若每个请求各开 socket 会瞬间打满 launchd 的 256 FD 软上限并触发 EMFILE。
+# 共享一个有界连接池把同时打开的 socket 数硬性封顶，与 MONITOR 并发解耦。
+_GOOGLE_MAX_CONNECTIONS = 50
 
 
 class GoogleClassroomAPI:
@@ -28,11 +32,38 @@ class GoogleClassroomAPI:
             logging.getLogger(__name__).warning(
                 "CLIENT_ID not configured. Google Classroom integration will be disabled."
             )
-        
+
         self.base_url = "https://classroom.googleapis.com/v1"
         self.oauth_url = "https://oauth2.googleapis.com/token"
         self.token_info_url = "https://oauth2.googleapis.com/tokeninfo"
-        
+
+        # 进程级共享会话（懒加载，必须在事件循环内创建）
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._session_lock = asyncio.Lock()
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """返回进程级共享的 aiohttp 会话，连接池有界，FD 占用封顶。"""
+        if self._session is None or self._session.closed:
+            async with self._session_lock:
+                # 双重检查：可能在等锁期间已被其他协程创建
+                if self._session is None or self._session.closed:
+                    connector = aiohttp.TCPConnector(
+                        limit=_GOOGLE_MAX_CONNECTIONS,
+                        limit_per_host=_GOOGLE_MAX_CONNECTIONS,
+                        ttl_dns_cache=300,
+                    )
+                    self._session = aiohttp.ClientSession(
+                        connector=connector,
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    )
+        return self._session
+
+    async def close(self) -> None:
+        """关闭共享会话（应用 lifespan 退出时调用）。"""
+        if self._session is not None and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
     async def _make_request(
         self, 
         session: aiohttp.ClientSession, 
@@ -47,7 +78,16 @@ class GoogleClassroomAPI:
                 if response.status == 200:
                     return await response.json()
                 else:
-                    logging.error(f"Request failed: {response.status} - {await response.text()}")
+                    body = await response.text()
+                    if response.status == 403:
+                        # 课程对该用户权限受限（如旁听/受限成员），预期内的非致命情况
+                        logging.warning(
+                            f"Request denied (403): {method} {url} - {body}"
+                        )
+                    else:
+                        logging.error(
+                            f"Request failed: {response.status} - {method} {url} - {body}"
+                        )
                     return None
         except Exception as e:
             logging.error(f"Request error: {e}")
@@ -70,8 +110,7 @@ class GoogleClassroomAPI:
 
         if session is not None:
             return await _do_check(session)
-        async with aiohttp.ClientSession() as s:
-            return await _do_check(s)
+        return await _do_check(await self._get_session())
     
     async def _refresh_access_token(self, username: str, refresh_token: str, session: Optional[aiohttp.ClientSession] = None) -> Optional[str]:
         """刷新访问令牌"""
@@ -108,8 +147,7 @@ class GoogleClassroomAPI:
 
         if session is not None:
             return await _do_refresh(session)
-        async with aiohttp.ClientSession() as s:
-            return await _do_refresh(s)
+        return await _do_refresh(await self._get_session())
     
     async def _get_valid_access_token(self, username: str, session: Optional[aiohttp.ClientSession] = None) -> Optional[str]:
         """获取有效的访问令牌，如果无效则尝试刷新"""
@@ -334,8 +372,7 @@ class GoogleClassroomAPI:
         try:
             if session is not None:
                 return await _do_revoke(session)
-            async with aiohttp.ClientSession() as s:
-                return await _do_revoke(s)
+            return await _do_revoke(await self._get_session())
         except Exception as e:
             logging.error(f"通过Google API撤销令牌时出错: {e}")
             return False
@@ -346,112 +383,113 @@ class GoogleClassroomAPI:
             logging.warning("Google Classroom client_id is not configured; skipping assignment fetch.")
             return []
 
-        async with aiohttp.ClientSession() as session:
-            # 获取有效的访问令牌（复用同一个 session）
-            access_token = await self._get_valid_access_token(username, session=session)
-            if not access_token:
-                logging.error(f"无法获取用户 {username} 的有效访问令牌")
+        # 复用进程级共享会话（连接池有界），不再每用户新建会话
+        session = await self._get_session()
+        # 获取有效的访问令牌
+        access_token = await self._get_valid_access_token(username, session=session)
+        if not access_token:
+            logging.error(f"无法获取用户 {username} 的有效访问令牌")
+            return []
+        try:
+            # 1. 获取所有活跃课程
+            courses = await self._get_active_courses(session, access_token)
+            if not courses:
+                logging.info(f"用户 {username} 没有活跃课程")
                 return []
-            try:
-                # 1. 获取所有活跃课程
-                courses = await self._get_active_courses(session, access_token)
-                if not courses:
-                    logging.info(f"用户 {username} 没有活跃课程")
-                    return []
-                
-                logging.info(f"用户 {username} 有 {len(courses)} 个活跃课程")
-                
-                # 创建课程ID到课程名称的映射
-                course_name_map = {course["id"]: course["name"] for course in courses}
-                course_ids = list(course_name_map.keys())
 
-                # 缓存 Google Classroom 课程名到反向索引（Layer 5 课程关联传播用）
-                gc_course_names = list(course_name_map.values())
-                if gc_course_names:
-                    try:
-                        pipe = redis.pipeline()
-                        pipe.sadd(f"user_courses:{username}", *gc_course_names)
-                        pipe.expire(f"user_courses:{username}", 86400)
-                        for cn in gc_course_names:
-                            pipe.sadd(f"course_users:{cn}", username)
-                            pipe.expire(f"course_users:{cn}", 86400)
-                        await pipe.execute()
-                    except Exception:
-                        pass  # Redis 失败不影响主流程
+            logging.info(f"用户 {username} 有 {len(courses)} 个活跃课程")
 
-                # 2. 并行获取 courseWork 和 submissions（通配符方式无依赖关系）
-                course_work_map, submissions_map = await asyncio.gather(
-                    self._get_course_work_batch(session, access_token, course_ids),
-                    self._get_student_submissions_batch(session, access_token, course_ids),
-                )
+            # 创建课程ID到课程名称的映射
+            course_name_map = {course["id"]: course["name"] for course in courses}
+            course_ids = list(course_name_map.keys())
 
-                # 3. 筛选有截止时间的课题，并且去除已经超过截止时间1天以上的课题
-                course_work_with_due = []
-                one_day_ago_utc = datetime.now(timezone.utc) - timedelta(days=1)
+            # 缓存 Google Classroom 课程名到反向索引（Layer 5 课程关联传播用）
+            gc_course_names = list(course_name_map.values())
+            if gc_course_names:
+                try:
+                    pipe = redis.pipeline()
+                    pipe.sadd(f"user_courses:{username}", *gc_course_names)
+                    pipe.expire(f"user_courses:{username}", 86400)
+                    for cn in gc_course_names:
+                        pipe.sadd(f"course_users:{cn}", username)
+                        pipe.expire(f"course_users:{cn}", 86400)
+                    await pipe.execute()
+                except Exception:
+                    pass  # Redis 失败不影响主流程
 
-                for course_id, course_work_list in course_work_map.items():
-                    for work in course_work_list:
-                        if "dueDate" in work:
-                            due_date_data = work['dueDate']
-                            due_time_data = work.get('dueTime')
+            # 2. 并行获取 courseWork 和 submissions（通配符方式无依赖关系）
+            course_work_map, submissions_map = await asyncio.gather(
+                self._get_course_work_batch(session, access_token, course_ids),
+                self._get_student_submissions_batch(session, access_token, course_ids),
+            )
 
-                            if due_time_data:
-                                hours = due_time_data.get('hours', 0)
-                                minutes = due_time_data.get('minutes', 0)
-                            else:
-                                hours = 23
-                                minutes = 59
+            # 3. 筛选有截止时间的课题，并且去除已经超过截止时间1天以上的课题
+            course_work_with_due = []
+            one_day_ago_utc = datetime.now(timezone.utc) - timedelta(days=1)
 
-                            due_date_utc = datetime(
-                                due_date_data['year'],
-                                due_date_data['month'],
-                                due_date_data['day'],
-                                hours,
-                                minutes,
-                                tzinfo=timezone.utc
-                            )
+            for course_id, course_work_list in course_work_map.items():
+                for work in course_work_list:
+                    if "dueDate" in work:
+                        due_date_data = work['dueDate']
+                        due_time_data = work.get('dueTime')
 
-                            if due_date_utc >= one_day_ago_utc:
-                                course_work_with_due.append(work)
+                        if due_time_data:
+                            hours = due_time_data.get('hours', 0)
+                            minutes = due_time_data.get('minutes', 0)
+                        else:
+                            hours = 23
+                            minutes = 59
 
-                if not course_work_with_due:
-                    logging.info(f"用户 {username} 没有有截止时间的课题")
-                    return []
-
-                logging.info(f"用户 {username} 有 {len(course_work_with_due)} 个有截止时间的课题")
-                
-                # 5. 汇总结果
-                pending_assignments = []
-                for work in course_work_with_due:
-                    course_id = work["courseId"]
-                    course_work_id = work["id"]
-                    key = f"{course_id}_{course_work_id}"
-                    
-                    # 检查是否有未完成的提交
-                    submissions = submissions_map.get(key, [])
-                    if submissions:  # 有NEW或CREATED状态的提交，说明未完成
-                        due_date, due_time = self._format_due_datetime(
-                            work.get("dueDate"), 
-                            work.get("dueTime")
+                        due_date_utc = datetime(
+                            due_date_data['year'],
+                            due_date_data['month'],
+                            due_date_data['day'],
+                            hours,
+                            minutes,
+                            tzinfo=timezone.utc
                         )
-                        if due_date:  # 确保有有效的截止日期
-                            assignment = {
-                                "title": work.get("title", "未命名课题"),
-                                "courseId": course_id,
-                                "courseName": course_name_map.get(course_id, "未知课程"),
-                                "dueDate": due_date,
-                                "dueTime": due_time,
-                                "description": work.get("description", ""),
-                                "url": work.get("alternateLink", self._generate_assignment_url(course_id, course_work_id))
-                            }
-                            pending_assignments.append(assignment)
-                
-                logging.info(f"用户 {username} 有 {len(pending_assignments)} 个未完成的课题")
-                return pending_assignments
-                
-            except Exception as e:
-                logging.error(f"获取用户 {username} 课题时出错: {e}")
+
+                        if due_date_utc >= one_day_ago_utc:
+                            course_work_with_due.append(work)
+
+            if not course_work_with_due:
+                logging.info(f"用户 {username} 没有有截止时间的课题")
                 return []
+
+            logging.info(f"用户 {username} 有 {len(course_work_with_due)} 个有截止时间的课题")
+
+            # 5. 汇总结果
+            pending_assignments = []
+            for work in course_work_with_due:
+                course_id = work["courseId"]
+                course_work_id = work["id"]
+                key = f"{course_id}_{course_work_id}"
+
+                # 检查是否有未完成的提交
+                submissions = submissions_map.get(key, [])
+                if submissions:  # 有NEW或CREATED状态的提交，说明未完成
+                    due_date, due_time = self._format_due_datetime(
+                        work.get("dueDate"),
+                        work.get("dueTime")
+                    )
+                    if due_date:  # 确保有有效的截止日期
+                        assignment = {
+                            "title": work.get("title", "未命名课题"),
+                            "courseId": course_id,
+                            "courseName": course_name_map.get(course_id, "未知课程"),
+                            "dueDate": due_date,
+                            "dueTime": due_time,
+                            "description": work.get("description", ""),
+                            "url": work.get("alternateLink", self._generate_assignment_url(course_id, course_work_id))
+                        }
+                        pending_assignments.append(assignment)
+
+            logging.info(f"用户 {username} 有 {len(pending_assignments)} 个未完成的课题")
+            return pending_assignments
+
+        except Exception as e:
+            logging.error(f"获取用户 {username} 课题时出错: {e}")
+            return []
 
 
 # 全局Google Classroom API实例

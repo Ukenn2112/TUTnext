@@ -10,6 +10,7 @@ from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.core.database import db_manager
 from tutnext.config import HTTP_PROXY
 from tutnext.services.gakuen.session_manager import get_session_manager
+from tutnext.services.google_classroom import classroom_api
 
 
 class UserData(BaseModel):
@@ -22,7 +23,8 @@ async def lifespan(app: FastAPI):
     # 启动时初始化数据库
     await db_manager.init_db()
     yield
-    # 关闭时关闭数据库连接池
+    # 关闭时释放资源：共享 HTTP 会话 + 数据库连接池
+    await classroom_api.close()
     await db_manager.close()
 
 
