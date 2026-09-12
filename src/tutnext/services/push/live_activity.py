@@ -6,17 +6,28 @@ them as APNs ``liveactivity`` pushes at the appropriate times.
 
 Transition logic here MUST stay in sync with the iOS
 ``LiveActivityScheduler.computeTransitions`` implementation.
+
+Redis keys used by this module
+------------------------------
+``la:tokens:{username}``           hash activity_id -> token JSON   (TTL 24 h)
+``la:transitions:{username}``      zset content-state JSON by ts    (TTL → midnight + 1 h)
+``la:pts:{username}``              push-to-start token              (TTL 30 d)
+``la:pts:pw:{username}``           fallback encryptedPassword       (TTL 30 d)
+``la:start:{username}``            zset with exactly one start event (TTL → midnight + 1 h)
+``la:pending_schedule:{username}`` JSON retry record for /register  (TTL → midnight + 1 h)
+``la:schedule:{username}:{date}``  cached raw schedule payload      (TTL 300 s)
 """
 import json
 import logging
-from datetime import datetime, timedelta, time as dt_time
-from typing import Optional
+from datetime import date as date_type
+from datetime import datetime, timedelta
+from datetime import time as dt_time
 from uuid import uuid4
 
 from aioapns import NotificationRequest, PushType
 
-from tutnext.config import JAPAN_TZ, HTTP_PROXY, redis, APNS_CONFIG
-from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
+from tutnext.config import APNS_CONFIG, JAPAN_TZ, redis
+from tutnext.services.gakuen.client import GakuenAPIError
 from tutnext.services.gakuen.session_manager import get_session_manager
 from tutnext.services.push.apns_client import get_apns_client
 
@@ -27,6 +38,35 @@ _APPLE_EPOCH_OFFSET = 978307200.0
 
 # APNs topic for Live Activity (main app bundle ID, NOT widget)
 _LA_APNS_TOPIC = f"{APNS_CONFIG['topic']}.push-type.liveactivity"
+
+# Swift ActivityAttributes type name (required by push-to-start payloads)
+_LA_ATTRIBUTES_TYPE = "ClassLiveActivityAttributes"
+
+# Grace period added on top of the next expected transition for ``stale-date``
+_STALE_GRACE_SECONDS = 600
+
+# Transient push failure retry policy
+_RETRY_DELAY_SECONDS = 30
+_MAX_PUSH_ATTEMPTS = 3
+
+# /register scheduling retry policy
+_PENDING_RETRY_INTERVAL = 60
+_MAX_PENDING_ATTEMPTS = 5
+
+# Push-to-start token TTL (30 days)
+_PTS_TTL = 30 * 86400
+
+# Raw schedule cache TTL
+_SCHEDULE_CACHE_TTL = 300
+
+# Phases that are cheap client-side countdown states → low priority (no budget cost)
+_LOW_PRIORITY_PHASES = frozenset({"upcoming", "imminent"})
+
+# APNs reasons that mean the device token must be dropped
+_INVALID_TOKEN_REASONS = frozenset({"Unregistered", "BadDeviceToken", "ExpiredToken"})
+
+# Private (non content-state) keys carried inside sorted-set members
+_PRIVATE_KEYS = ("_next_ts", "_attempt")
 
 # Period times (JST): lesson_num -> (start_h, start_m, end_h, end_m)
 PERIOD_TIMES: dict[int, tuple[int, int, int, int]] = {
@@ -69,6 +109,47 @@ def _clean_room(room: str) -> str:
     return room.replace("教室", "").strip() if room else ""
 
 
+def _display_name(name: str, teachers: list | None) -> str:
+    """Strip the teacher-name suffix T-NEXT appends to the course name.
+
+    ``"ホームゼミVI 小林 英夫"`` with ``teachers=["小林 英夫"]`` → ``"ホームゼミVI"``.
+    Mirrors the iOS display-name logic so both sides render identically.
+    """
+    if not name:
+        return name
+    teacher = (teachers or [""])[0] if teachers else ""
+    if not teacher:
+        return name
+    suffix = f" {teacher}"
+    if name.endswith(suffix) and len(name) > len(suffix):
+        return name[: -len(suffix)].rstrip()
+    return name
+
+
+def _midnight_ttl(from_date: date_type | None = None) -> int:
+    """Seconds until the midnight following ``from_date`` (default: today) + 1 h."""
+    now_jst = datetime.now(JAPAN_TZ)
+    base = from_date or now_jst.date()
+    midnight = JAPAN_TZ.localize(
+        datetime.combine(base + timedelta(days=1), dt_time(0, 0))
+    )
+    return max(int((midnight - now_jst).total_seconds()), 0) + 3600
+
+
+def _strip_private(member: dict) -> dict:
+    """Return the content-state without the private bookkeeping keys."""
+    return {k: v for k, v in member.items() if k not in _PRIVATE_KEYS}
+
+
+def _push_priority(phase: str) -> int:
+    """APNs priority: 5 for countdown-only phases (no per-hour budget cost)."""
+    return 5 if phase in _LOW_PRIORITY_PHASES else 10
+
+
+def _decode(value) -> str:
+    return value if isinstance(value, str) else value.decode()
+
+
 # ---------------------------------------------------------------------------
 # Transition computation
 # ---------------------------------------------------------------------------
@@ -98,10 +179,10 @@ def compute_transitions(
         if not lesson_num or lesson_num not in PERIOD_TIMES:
             continue
 
-        name = lesson.get("name", "")
-        room = _clean_room(lesson.get("room", ""))
         teachers = lesson.get("teachers") or [""]
         teacher = teachers[0] if teachers else ""
+        name = _display_name(lesson.get("name", ""), teachers)
+        room = _clean_room(lesson.get("room", ""))
         has_room_change = "previous_room" in lesson
 
         sh, sm, eh, em = PERIOD_TIMES[lesson_num]
@@ -185,10 +266,10 @@ def compute_transitions(
                     # 10分超 → breakTime を表示（昼休み等）
                     # 10分以下 → breakTime スキップ、upcoming がそのまま続く
                     if gap_minutes > 10:
-                        next_name = next_lesson.get("name", "")
-                        next_room = _clean_room(next_lesson.get("room", ""))
                         next_teachers = next_lesson.get("teachers") or [""]
                         next_teacher = next_teachers[0] if next_teachers else ""
+                        next_name = _display_name(next_lesson.get("name", ""), next_teachers)
+                        next_room = _clean_room(next_lesson.get("room", ""))
 
                         transitions.append({
                             "timestamp": end_dt.timestamp(),
@@ -222,89 +303,52 @@ def compute_transitions(
 
 
 # ---------------------------------------------------------------------------
-# Schedule pushes for a user
+# Schedule fetching (with a short-lived cache shared by /register + retries)
 # ---------------------------------------------------------------------------
 
-async def schedule_live_activity_pushes(
+def active_lessons(data: dict) -> list[dict]:
+    """Return the day's lessons with cancelled / unnamed entries removed."""
+    return [
+        t for t in (data.get("time_table") or [])
+        if not (t.get("special_tags") and "休講" in t["special_tags"])
+        and t.get("name")
+    ]
+
+
+async def fetch_day_schedule(
     username: str,
     encrypted_password: str,
-    la_token: str,
-    activity_id: str,
-) -> int:
-    """Fetch today's schedule and store transition events in Redis.
+    target_date: date_type,
+) -> dict:
+    """Fetch a day's schedule, reusing a 5 minute Redis cache when possible."""
+    cache_key = f"la:schedule:{username}:{target_date.isoformat()}"
+    cached = await redis.get(cache_key)
+    if cached:
+        logger.debug("LA: schedule cache hit for %s/%s", username, target_date)
+        return json.loads(_decode(cached))
 
-    Returns the number of transitions scheduled.
-    """
-    # # ---- 测试用假数据: 22311330mw ----
-    # if username == "22311330mw":
-    #     from datetime import date as _date
-    #     _today = _date.today()
-    #     _now = datetime.now(JAPAN_TZ)
-    #     # 1限目: +7分後開始、3分間
-    #     _s1 = _now + timedelta(minutes=7)
-    #     _e1 = _s1 + timedelta(minutes=3)
-    #     # 2限目: 1限目終了の12分後に開始（昼休みテスト）、3分間
-    #     _s2 = _e1 + timedelta(minutes=12)
-    #     _e2 = _s2 + timedelta(minutes=3)
-    #     _midnight = datetime(_today.year, _today.month, _today.day, 23, 59, tzinfo=JAPAN_TZ)
-    #     if _e2 > _midnight:
-    #         _e2 = _midnight
-    #     PERIOD_TIMES[3] = (_s1.hour, _s1.minute, _e1.hour, _e1.minute)
-    #     PERIOD_TIMES[4] = (_s2.hour, _s2.minute, _e2.hour, _e2.minute)
-    #     _weekdays_jp = ["月", "火", "水", "木", "金", "土", "日"]
-    #     data = {
-    #         "date_info": {
-    #             "date": _today.strftime("%Y/%m/%d"),
-    #             "day_of_week": _weekdays_jp[_today.weekday()],
-    #         },
-    #         "all_day_events": [],
-    #         "time_table": [
-    #             {
-    #                 "lesson_num": 3,
-    #                 "name": "情報工学概論",
-    #                 "teachers": ["中村 教授"],
-    #                 "room": "101",
-    #             },
-    #             {
-    #                 "lesson_num": 4,
-    #                 "name": "データサイエンス入門",
-    #                 "teachers": ["田中 准教授"],
-    #                 "room": "305",
-    #                 "previous_room": "242",
-    #             },
-    #         ],
-    #     }
-    #     logger.info("LA TEST: PERIOD_TIMES[5] = %s", PERIOD_TIMES[5])
-    # # ---- 测试用假数据 END ----
-    # else:
     async with get_session_manager().acquire(username, encrypted_password) as gakuen:
-        from datetime import date
         try:
             data = await gakuen.get_later_user_schedule(
-                username, encrypted_password, target_date=date.today(), skip_login=True
+                username, encrypted_password, target_date=target_date, skip_login=True
             )
         except GakuenAPIError as e:
             logger.error("LA schedule fetch failed for %s: %s", username, e)
             raise
 
-    if not data.get("time_table"):
-        logger.info("LA: %s has no classes today", username)
-        return 0
+    try:
+        await redis.set(cache_key, json.dumps(data), ex=_SCHEDULE_CACHE_TTL)
+    except Exception as e:  # cache failures must never break scheduling
+        logger.warning("LA: schedule cache write failed for %s: %s", username, e)
+    return data
 
-    # Filter cancelled
-    active = [
-        t for t in data["time_table"]
-        if not (t.get("special_tags") and "休講" in t["special_tags"])
-        and t.get("name")
-    ]
-    if not active:
-        logger.info("LA: %s all classes cancelled", username)
-        return 0
 
-    date_str = data["date_info"]["date"]
-    transitions = compute_transitions(active, date_str, push_only=False)
+# ---------------------------------------------------------------------------
+# Token storage
+# ---------------------------------------------------------------------------
 
-    # Store token
+async def store_la_token(username: str, la_token: str, activity_id: str) -> None:
+    """Persist an update token for a running Live Activity (24 h TTL)."""
     token_key = f"la:tokens:{username}"
     token_data = json.dumps({
         "token": la_token,
@@ -313,30 +357,209 @@ async def schedule_live_activity_pushes(
     await redis.hset(token_key, activity_id, token_data)  # type: ignore[misc]
     await redis.expire(token_key, 86400)  # type: ignore[misc]
 
-    # Store transitions in sorted set
+
+async def store_push_to_start_token(
+    username: str,
+    token: str,
+    encrypted_password: str | None = None,
+) -> None:
+    """Persist a push-to-start token (30 d TTL, refreshed on every call)."""
+    await redis.set(f"la:pts:{username}", token, ex=_PTS_TTL)
+    if encrypted_password:
+        await redis.set(f"la:pts:pw:{username}", encrypted_password, ex=_PTS_TTL)
+
+
+# ---------------------------------------------------------------------------
+# Transition storage
+# ---------------------------------------------------------------------------
+
+def _annotate_next_ts(transitions: list[dict]) -> list[dict]:
+    """Attach ``_next_ts`` (the following transition's timestamp) to each entry.
+
+    Deterministic at scheduling time, so the dispatcher can derive ``stale-date``
+    without an extra Redis round trip.
+    """
+    annotated: list[dict] = []
+    for idx, t in enumerate(transitions):
+        member = dict(t["content_state"])
+        if idx + 1 < len(transitions):
+            member["_next_ts"] = transitions[idx + 1]["timestamp"]
+        annotated.append({"timestamp": t["timestamp"], "member": member})
+    return annotated
+
+
+async def store_transitions(username: str, transitions: list[dict]) -> int:
+    """Replace the user's transition sorted set with the future transitions."""
     trans_key = f"la:transitions:{username}"
     await redis.delete(trans_key)
 
     now_ts = datetime.now(JAPAN_TZ).timestamp()
     stored = 0
-    for t in transitions:
-        if t["timestamp"] <= now_ts:
+    for entry in _annotate_next_ts(transitions):
+        # Past transitions are dropped: the client catches its own state up.
+        if entry["timestamp"] <= now_ts:
             continue
-        member = json.dumps(t["content_state"])
-        await redis.zadd(trans_key, {member: t["timestamp"]})
+        await redis.zadd(trans_key, {json.dumps(entry["member"]): entry["timestamp"]})
         stored += 1
 
-    # TTL: midnight JST + 1 hour
-    now_jst = datetime.now(JAPAN_TZ)
-    midnight = JAPAN_TZ.localize(
-        datetime.combine(now_jst.date() + timedelta(days=1), dt_time(0, 0))
-    )
-    ttl = int((midnight - now_jst).total_seconds()) + 3600
     if stored > 0:
-        await redis.expire(trans_key, ttl)
+        await redis.expire(trans_key, _midnight_ttl())
+    return stored
+
+
+# ---------------------------------------------------------------------------
+# Scheduling for a user
+# ---------------------------------------------------------------------------
+
+async def schedule_live_activity_pushes(
+    username: str,
+    encrypted_password: str,
+    la_token: str | None = None,
+    activity_id: str | None = None,
+) -> int:
+    """Fetch today's schedule and store transition events in Redis.
+
+    The token (when given) is expected to be stored by the caller *before* this
+    runs, so a T-NEXT failure can never cost us the token.
+
+    Returns the number of transitions scheduled.
+    """
+    data = await fetch_day_schedule(username, encrypted_password, date_type.today())
+
+    active = active_lessons(data)
+    if not active:
+        logger.info("LA: %s has no active classes today", username)
+        await redis.delete(f"la:transitions:{username}")
+        return 0
+
+    date_str = data["date_info"]["date"]
+    transitions = compute_transitions(active, date_str, push_only=False)
+    stored = await store_transitions(username, transitions)
 
     logger.info("LA: %s scheduled %d transitions (of %d total)", username, stored, len(transitions))
     return stored
+
+
+# ---------------------------------------------------------------------------
+# Pending-schedule retry queue (used when T-NEXT is down at /register time)
+# ---------------------------------------------------------------------------
+
+async def enqueue_pending_schedule(username: str, encrypted_password: str) -> None:
+    """Remember that this user's transitions still need to be computed."""
+    key = f"la:pending_schedule:{username}"
+    payload = json.dumps({
+        "encryptedPassword": encrypted_password,
+        "attempts": 0,
+        "next_try": datetime.now(JAPAN_TZ).timestamp() + _PENDING_RETRY_INTERVAL,
+    })
+    await redis.set(key, payload, ex=_midnight_ttl())
+
+
+async def _retry_pending_schedule(key: str, now_ts: float) -> None:
+    """Retry one pending /register scheduling job if it is due."""
+    raw = await redis.get(key)
+    if not raw:
+        return
+    username = key.split(":", 2)[2]
+    record = json.loads(_decode(raw))
+    if record.get("next_try", 0) > now_ts:
+        return
+
+    attempts = int(record.get("attempts", 0)) + 1
+    try:
+        count = await schedule_live_activity_pushes(username, record["encryptedPassword"])
+        await redis.delete(key)
+        logger.info("LA: pending schedule for %s succeeded on attempt %d (%d transitions)",
+                    username, attempts, count)
+        return
+    except Exception as e:
+        if attempts >= _MAX_PENDING_ATTEMPTS:
+            await redis.delete(key)
+            logger.warning("LA: pending schedule for %s gave up after %d attempts: %s",
+                           username, attempts, e)
+            return
+        record["attempts"] = attempts
+        record["next_try"] = now_ts + _PENDING_RETRY_INTERVAL
+        await redis.set(key, json.dumps(record), ex=_midnight_ttl())
+        logger.warning("LA: pending schedule for %s failed (attempt %d): %s", username, attempts, e)
+
+
+async def retry_pending_schedules() -> None:
+    """Scan and retry all pending /register scheduling jobs that are due."""
+    now_ts = datetime.now(JAPAN_TZ).timestamp()
+    keys = [_decode(k) async for k in redis.scan_iter("la:pending_schedule:*")]
+    for key in keys:
+        try:
+            await _retry_pending_schedule(key, now_ts)
+        except Exception as e:
+            logger.error("LA: pending schedule retry error for %s: %s", key, e)
+
+
+# ---------------------------------------------------------------------------
+# Push-to-start pre-scheduling (runs from the 20:30 JST daily job)
+# ---------------------------------------------------------------------------
+
+async def schedule_push_to_start(username: str, data: dict) -> bool:
+    """Store tomorrow's *first* transition for a push-to-start capable user.
+
+    Only the first ``upcoming`` transition is stored: the remaining ones are
+    scheduled by ``/register`` once the device has started the activity and
+    reported its update token.
+
+    Returns True when a start event was stored.
+    """
+    pts_token = await redis.get(f"la:pts:{username}")
+    if not pts_token:
+        return False
+
+    start_key = f"la:start:{username}"
+    active = active_lessons(data)
+    if not active:
+        await redis.delete(start_key)
+        return False
+
+    date_str = data["date_info"]["date"]
+    transitions = compute_transitions(active, date_str, push_only=False)
+    if not transitions:
+        await redis.delete(start_key)
+        return False
+
+    annotated = _annotate_next_ts(transitions)
+    first = annotated[0]
+
+    await redis.delete(start_key)
+    await redis.zadd(start_key, {json.dumps(first["member"]): first["timestamp"]})
+    await redis.expire(start_key, _midnight_ttl(datetime.strptime(date_str, "%Y/%m/%d").date()))
+    logger.info("LA: %s push-to-start scheduled for %s (%s)",
+                username, date_str, first["member"].get("courseName"))
+    return True
+
+
+async def schedule_push_to_start_for_unregistered_users(known_usernames: set[str]) -> int:
+    """Pre-schedule start events for push-to-start users absent from the users table.
+
+    ``send_9pm_push_pool`` only iterates DB users; users who registered a
+    push-to-start token without a device push registration are handled here
+    using the encryptedPassword captured by ``/live-activity/push-to-start``.
+    """
+    scheduled = 0
+    keys = [_decode(k) async for k in redis.scan_iter("la:pts:*")]
+    for key in keys:
+        username = key.split(":", 2)[2]
+        if username.startswith("pw:") or username in known_usernames:
+            continue
+        password = await redis.get(f"la:pts:pw:{username}")
+        if not password:
+            continue
+        try:
+            data = await fetch_day_schedule(
+                username, _decode(password), date_type.today() + timedelta(days=1)
+            )
+            if await schedule_push_to_start(username, data):
+                scheduled += 1
+        except Exception as e:
+            logger.warning("LA: push-to-start pre-scheduling failed for %s: %s", username, e)
+    return scheduled
 
 
 # ---------------------------------------------------------------------------
@@ -344,87 +567,152 @@ async def schedule_live_activity_pushes(
 # ---------------------------------------------------------------------------
 
 async def dispatch_live_activity_pushes() -> int:
-    """Check all users' transition sorted sets and send due pushes.
+    """Check all users' transition / start sorted sets and send due pushes.
 
     Returns the total number of pushes sent.
     """
     now_ts = datetime.now(JAPAN_TZ).timestamp()
     total_sent = 0
 
-    # Collect all transition keys
-    keys: list[str] = []
-    async for key in redis.scan_iter("la:transitions:*"):
-        keys.append(key if isinstance(key, str) else key.decode())
-
+    keys = [_decode(k) async for k in redis.scan_iter("la:transitions:*")]
     for key in keys:
-        username = key.split(":")[2]
-
+        username = key.split(":", 2)[2]
         while True:
-            # Atomic pop of due event
-            member = await redis.eval(_LUA_POP_DUE, 1, key, str(now_ts))  # type: ignore[misc]
-            if member is None:
+            member_raw = await redis.eval(_LUA_POP_DUE, 1, key, str(now_ts))  # type: ignore[misc]
+            if member_raw is None:
                 break
+            total_sent += await _dispatch_transition(username, key, json.loads(_decode(member_raw)))
 
-            if isinstance(member, bytes):
-                member = member.decode()
-            content_state = json.loads(member)
-
-            # Get all tokens for this user
-            token_key = f"la:tokens:{username}"
-            tokens = await redis.hgetall(token_key)  # type: ignore[misc]
-            if not tokens:
-                continue
-
-            is_finished = content_state.get("phase") == "finished"
-
-            for activity_id_raw, token_json_raw in tokens.items():
-                aid = activity_id_raw if isinstance(activity_id_raw, str) else activity_id_raw.decode()
-                tj = token_json_raw if isinstance(token_json_raw, str) else token_json_raw.decode()
-                token_data = json.loads(tj)
-                la_token = token_data["token"]
-
-                success = await _send_la_push(la_token, content_state, is_finished)
-                if success:
-                    total_sent += 1
-                else:
-                    # Invalid token → clean up
-                    await redis.hdel(token_key, aid)  # type: ignore[misc]
-                    logger.info("LA: removed invalid token for %s/%s", username, aid)
+    start_keys = [_decode(k) async for k in redis.scan_iter("la:start:*")]
+    for key in start_keys:
+        username = key.split(":", 2)[2]
+        while True:
+            member_raw = await redis.eval(_LUA_POP_DUE, 1, key, str(now_ts))  # type: ignore[misc]
+            if member_raw is None:
+                break
+            total_sent += await _dispatch_start(username, key, json.loads(_decode(member_raw)))
 
     return total_sent
+
+
+async def _reenqueue(key: str, member: dict, ttl_date: date_type | None = None) -> None:
+    """Re-add a failed member for another attempt, or drop it after 3 tries."""
+    attempts = int(member.get("_attempt", 0)) + 1
+    phase = member.get("phase")
+    if attempts >= _MAX_PUSH_ATTEMPTS:
+        logger.warning("LA: giving up on %s push after %d attempts (%s)", phase, attempts, key)
+        return
+    member["_attempt"] = attempts
+    retry_ts = datetime.now(JAPAN_TZ).timestamp() + _RETRY_DELAY_SECONDS
+    await redis.zadd(key, {json.dumps(member): retry_ts})
+    await redis.expire(key, _midnight_ttl(ttl_date))
+    logger.info("LA: re-queued %s push (attempt %d) for %s", phase, attempts, key)
+
+
+async def _dispatch_transition(username: str, key: str, member: dict) -> int:
+    """Send one popped transition to every live token of the user."""
+    token_key = f"la:tokens:{username}"
+    tokens = await redis.hgetall(token_key)  # type: ignore[misc]
+    if not tokens:
+        return 0
+
+    content_state = _strip_private(member)
+    is_finished = content_state.get("phase") == "finished"
+    next_ts = member.get("_next_ts")
+
+    sent = 0
+    needs_retry = False
+    for activity_id_raw, token_json_raw in tokens.items():
+        aid = _decode(activity_id_raw)
+        token_data = json.loads(_decode(token_json_raw))
+        result = await _send_la_push(
+            token_data["token"], content_state, next_ts, event="end" if is_finished else "update"
+        )
+        if result == "ok":
+            sent += 1
+        elif result == "invalid_token":
+            await redis.hdel(token_key, aid)  # type: ignore[misc]
+            logger.info("LA: removed invalid token for %s/%s", username, aid)
+        else:
+            needs_retry = True
+
+    if needs_retry:
+        await _reenqueue(key, member)
+    return sent
+
+
+async def _dispatch_start(username: str, key: str, member: dict) -> int:
+    """Send one popped push-to-start event, unless the activity is already running."""
+    tokens = await redis.hlen(f"la:tokens:{username}")  # type: ignore[misc]
+    if tokens:
+        logger.info("LA: %s already has a running activity → skip start push", username)
+        return 0
+
+    pts_token = await redis.get(f"la:pts:{username}")
+    if not pts_token:
+        logger.info("LA: %s has no push-to-start token → skip start push", username)
+        return 0
+
+    content_state = _strip_private(member)
+    result = await _send_la_push(
+        _decode(pts_token), content_state, member.get("_next_ts"), event="start"
+    )
+    if result == "ok":
+        return 1
+    if result == "invalid_token":
+        await redis.delete(f"la:pts:{username}")
+        logger.info("LA: removed invalid push-to-start token for %s", username)
+        return 0
+
+    await _reenqueue(key, member)
+    return 0
+
+
+async def _build_payload(content_state: dict, next_ts: float | None, event: str) -> dict:
+    """Build the APNs ``aps`` payload for one Live Activity push."""
+    now_ts = int(datetime.now(JAPAN_TZ).timestamp())
+    aps: dict = {
+        "timestamp": now_ts,
+        "event": event,
+        "content-state": content_state,
+    }
+
+    if event == "end":
+        # No stale-date on the end push; the activity is dismissed shortly after.
+        aps["dismissal-date"] = now_ts + 900  # 15 minutes
+    else:
+        # stale-date means "no update arrived when one was expected".
+        if next_ts:
+            aps["stale-date"] = int(next_ts) + _STALE_GRACE_SECONDS
+
+    if event == "start":
+        aps["attributes-type"] = _LA_ATTRIBUTES_TYPE
+        aps["attributes"] = {}
+
+    return {"aps": aps}
 
 
 async def _send_la_push(
     device_token: str,
     content_state: dict,
-    is_end: bool,
-) -> bool:
-    """Send a single Live Activity APNs push. Returns True on success."""
-    now_ts = int(datetime.now(JAPAN_TZ).timestamp())
+    next_ts: float | None,
+    *,
+    event: str = "update",
+) -> str:
+    """Send a single Live Activity APNs push.
 
-    # stale-date: countdownDate を Unix timestamp に変換
-    # countdownDate は Apple reference date (2001-01-01) からの秒数
-    countdown_apple = content_state.get("countdownDate", 0)
-    stale_ts = int(countdown_apple + _APPLE_EPOCH_OFFSET)
-
-    payload: dict = {
-        "aps": {
-            "timestamp": now_ts,
-            "event": "end" if is_end else "update",
-            "content-state": content_state,
-            "stale-date": stale_ts,
-        },
-    }
-
-    if is_end:
-        payload["aps"]["dismissal-date"] = now_ts + 900  # 15 minutes
+    Returns ``"ok"``, ``"invalid_token"`` (drop the token) or ``"retry"``
+    (transient failure — the caller should re-queue).
+    """
+    payload = await _build_payload(content_state, next_ts, event)
+    priority = 10 if event == "start" else _push_priority(content_state.get("phase", ""))
 
     notification = NotificationRequest(
         device_token=device_token,
         message=payload,
         notification_id=str(uuid4()),
         push_type=PushType.LIVEACTIVITY,
-        priority=10,
+        priority=priority,
         apns_topic=_LA_APNS_TOPIC,
     )
 
@@ -432,14 +720,12 @@ async def _send_la_push(
         apns = get_apns_client()
         result = await apns.send_notification(notification)
         if result.is_successful:
-            logger.debug("LA push sent: phase=%s", content_state.get("phase"))
-            return True
-        else:
-            logger.warning("LA push failed: %s", result.description)
-            # Check for unregistered / invalid token errors
-            if result.description in ("Unregistered", "BadDeviceToken", "ExpiredToken"):
-                return False
-            return True  # Don't remove token for transient errors
+            logger.debug("LA push sent: event=%s phase=%s", event, content_state.get("phase"))
+            return "ok"
+        logger.warning("LA push failed: %s", result.description)
+        if result.description in _INVALID_TOKEN_REASONS:
+            return "invalid_token"
+        return "retry"
     except Exception as e:
         logger.error("LA push error: %s", e)
-        return True  # Don't remove token on network errors
+        return "retry"

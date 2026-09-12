@@ -52,6 +52,19 @@ async def record_api_error():
         logging.error(f"记录API错误时发生异常: {e}")
 
 
+async def _schedule_push_to_start(username: str, data: dict) -> None:
+    """push-to-start トークンを持つユーザーの明日の開始イベントを事前登録する。
+
+    失敗しても通常の推送処理は続行する。
+    """
+    from tutnext.services.push.live_activity import schedule_push_to_start
+
+    try:
+        await schedule_push_to_start(username, data)
+    except Exception as e:
+        logging.warning(f"用户 {username} 的 Live Activity push-to-start 排程失败: {e}")
+
+
 # 检查用户明日课程信息
 async def check_tmrw_course_user_push(
     push_manager: PushPoolManager, username, encryptedPassword, deviceToken
@@ -98,6 +111,9 @@ async def check_tmrw_course_user_push(
             #                 event["title"],
             #             )
             #             continue
+            # Live Activity push-to-start: 明日の最初の授業を事前スケジュール
+            await _schedule_push_to_start(username, data)
+
             if not data["time_table"]:
                 logging.info(f"用户 {username} 没有课程数据")
                 return
@@ -166,6 +182,20 @@ async def send_9pm_push_pool(push_manager):
         logging.info(f"正在处理 {len(tasks)} 个用户的推送任务")
         await asyncio.gather(*tasks)
         logging.info("所有用户的推送任务处理完成")
+
+        # DB に居ない push-to-start ユーザーの開始イベントも事前登録する
+        try:
+            from tutnext.services.push.live_activity import (
+                schedule_push_to_start_for_unregistered_users,
+            )
+
+            extra = await schedule_push_to_start_for_unregistered_users(
+                {u["username"] for u in users}
+            )
+            if extra:
+                logging.info(f"Live Activity push-to-start: DB 外のユーザー {extra} 件を排程")
+        except Exception as e:
+            logging.error(f"Live Activity push-to-start 追加排程でエラー: {e}")
     except Exception as e:
         logging.error(f"处理9点推送池任务时出错: {e}")
 

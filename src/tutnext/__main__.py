@@ -16,7 +16,6 @@ import uvicorn
 # 初始化配置和日志（必须在其他模块导入前执行）
 from tutnext.config import JAPAN_TZ, settings
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -118,9 +117,13 @@ async def schedule_bus_scraper():
 
 
 async def schedule_live_activity_dispatcher():
-    """每10秒检查一次 Live Activity 过渡事件并推送"""
-    from tutnext.services.push.live_activity import dispatch_live_activity_pushes
+    """每10秒检查一次 Live Activity 过渡事件并推送；每60秒重试待处理的排程"""
+    from tutnext.services.push.live_activity import (
+        dispatch_live_activity_pushes,
+        retry_pending_schedules,
+    )
 
+    ticks = 0
     while True:
         try:
             sent = await dispatch_live_activity_pushes()
@@ -128,6 +131,14 @@ async def schedule_live_activity_dispatcher():
                 logger.info("LA dispatcher: sent %d pushes", sent)
         except Exception as e:
             logger.error("LA dispatcher error: %s", e)
+
+        ticks += 1
+        if ticks % 6 == 0:  # 每 6 次循环 = 60 秒
+            try:
+                await retry_pending_schedules()
+            except Exception as e:
+                logger.error("LA pending schedule retry error: %s", e)
+
         await asyncio.sleep(10)
 
 
