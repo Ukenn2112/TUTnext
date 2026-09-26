@@ -9,7 +9,7 @@ Transition logic here MUST stay in sync with the iOS
 
 Redis keys used by this module
 ------------------------------
-``la:tokens:{username}``           hash activity_id -> token JSON   (TTL 24 h)
+``la:tokens:{username}``           hash activity_id -> token JSON   (TTL → midnight + 1 h)
 ``la:transitions:{username}``      zset content-state JSON by ts    (TTL → midnight + 1 h)
 ``la:pts:{username}``              push-to-start token              (TTL 30 d)
 ``la:pts:pw:{username}``           fallback encryptedPassword       (TTL 30 d)
@@ -348,14 +348,19 @@ async def fetch_day_schedule(
 # ---------------------------------------------------------------------------
 
 async def store_la_token(username: str, la_token: str, activity_id: str) -> None:
-    """Persist an update token for a running Live Activity (24 h TTL)."""
+    """Persist an update token for a running Live Activity.
+
+    The hash expires at midnight JST + 1 h, like the other per-day keys: an
+    activity never outlives its day, and a stale token must not make the next
+    morning's push-to-start look like "already running".
+    """
     token_key = f"la:tokens:{username}"
     token_data = json.dumps({
         "token": la_token,
         "registered_at": datetime.now(JAPAN_TZ).isoformat(),
     })
     await redis.hset(token_key, activity_id, token_data)  # type: ignore[misc]
-    await redis.expire(token_key, 86400)  # type: ignore[misc]
+    await redis.expire(token_key, _midnight_ttl())  # type: ignore[misc]
 
 
 async def store_push_to_start_token(
@@ -621,6 +626,7 @@ async def _dispatch_transition(username: str, key: str, member: dict) -> int:
     next_ts = member.get("_next_ts")
 
     sent = 0
+    ended = 0
     needs_retry = False
     for activity_id_raw, token_json_raw in tokens.items():
         aid = _decode(activity_id_raw)
@@ -630,11 +636,25 @@ async def _dispatch_transition(username: str, key: str, member: dict) -> int:
         )
         if result == "ok":
             sent += 1
+            if is_finished:
+                # The activity is over and its update token is dead. The app is
+                # usually not running to call /unregister, so drop it here; a
+                # lingering token would make _dispatch_start skip tomorrow's start.
+                await redis.hdel(token_key, aid)  # type: ignore[misc]
+                ended += 1
+                logger.info("LA: removed ended activity token for %s/%s", username, aid)
         elif result == "invalid_token":
             await redis.hdel(token_key, aid)  # type: ignore[misc]
             logger.info("LA: removed invalid token for %s/%s", username, aid)
         else:
             needs_retry = True
+
+    if ended:
+        # Mirror /unregister: with no tokens left, the remaining transitions are moot.
+        remaining: int = await redis.hlen(token_key)  # type: ignore[misc]
+        if remaining == 0:
+            await redis.delete(key)
+            logger.info("LA: %s has no tokens left after end push → transitions deleted", username)
 
     if needs_retry:
         await _reenqueue(key, member)
