@@ -15,6 +15,7 @@ for users, OAuth tokens, Live Activity state and the API caches.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -35,8 +36,9 @@ class D1Error(RuntimeError):
 class BindingExecutor:
     """Run statements through a Worker D1 binding (Workers mode)."""
 
-    def __init__(self, binding_name: str = "DB") -> None:
+    def __init__(self, binding_name: str = "DB", *, timeout: float = 25) -> None:
         self.binding_name = binding_name
+        self.timeout = timeout
 
     @property
     def _db(self) -> Any:
@@ -52,7 +54,8 @@ class BindingExecutor:
             if params:
                 stmt = stmt.bind(*params)
             prepared.append(stmt)
-        return list(await db.batch(prepared))
+        # A hung D1 call would otherwise keep the invocation (and the isolate) suspended forever.
+        return list(await asyncio.wait_for(db.batch(prepared), self.timeout))
 
 
 class HttpExecutor:

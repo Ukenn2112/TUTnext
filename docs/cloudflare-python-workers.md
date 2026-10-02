@@ -30,12 +30,16 @@ Pydantic 模型、Gakuen 解析器、Live Activity 过渡计算与推送池逻�
 
 ### Cron 对照（UTC）
 
-| cron | JST | 作业 |
+Worker 只配置 **一个** 触发器 `* * * * *`；`scheduler.every_minute()` 根据时钟决定本分钟还要做什么。
+原因：Pyodide 不能在一个 `scheduled()` 调用挂起时进入第二个（"Cannot enter a promising task from
+inside another running promising task"），2026-10-02 四个触发器重叠时曾让 isolate 连续失败 28 分钟。
+
+| 时机（UTC） | JST | 作业 |
 |---|---|---|
-| `* * * * *` | 每分钟 | 定时推送池（07:00…21:15）、Live Activity 调度（1 次调用内 6×10 s）、`/register` 失败重试、过期键清理 |
-| `*/5 * * * *` | 每 5 分钟 | 课题监测 `MonitorService`（3:00–6:10 静默窗口内跳过；`MONITOR_INTERVAL_SECONDS=240` 把一轮分散在 4 分钟内） |
-| `30 11 * * *` | 20:30 | 次日课表推送 `send_9pm_push_pool` |
-| `0 18 * * SUN` | 周一 03:00 | 巴士时刻表更新（Cloudflare 的星期字段不接受 `0`，必须写 `SUN`） |
+| 每分钟 | 每分钟 | 定时推送池（07:00…21:15）、Live Activity 调度（10 s 一次，约 48 s 预算）、`/register` 失败重试、过期键清理 |
+| 分钟 % 5 == 0 | 每 5 分钟 | 课题监测（仅当 `ENABLE_MONITOR_PUSH=true`；3:00–6:10 静默窗口内跳过） |
+| 11:30 | 20:30 | 次日课表推送（仅当 `ENABLE_DAILY_PUSH=true`） |
+| 周日 18:00 | 周一 03:00 | 巴士时刻表更新 |
 
 ## 2. 日常命令
 

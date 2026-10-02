@@ -1,26 +1,32 @@
 """Cron dispatcher for Cloudflare Workers.
 
 The server deployment runs the background jobs as asyncio loops in
-``tutnext.__main__``.  On Workers each job is a Cron Trigger (see
-``wrangler.jsonc``) and this module maps the cron expression that fired to the
-matching job:
+``tutnext.__main__``.  On Workers a **single** Cron Trigger (``* * * * *``)
+fires :func:`every_minute`, which runs the per-minute work and, by looking at
+the clock, the less frequent jobs:
 
-======================  ===========================  ===============================
-cron (UTC)              JST                          job
-======================  ===========================  ===============================
-``* * * * *``           every minute                 push pools, Live Activity
-                                                     dispatcher (6×10 s), pending
-                                                     retries, expired-key purge
-``*/5 * * * *``         every 5 min (not 3:00–6:10)  assignment monitor
-``30 11 * * *``         20:30                        next-day schedule push
-``0 18 * * SUN``          Monday 03:00                 bus timetable update
-======================  ===========================  ===============================
+====================================  ===============================================
+when (UTC)                            job
+====================================  ===============================================
+every minute                          push pools, Live Activity dispatcher (10 s ticks
+                                      until ~50 s elapsed), pending retries, TTL purge
+minute % 5 == 0 (not 3:00–6:10 JST)   assignment monitor (only if ENABLE_MONITOR_PUSH)
+11:30                                 next-day schedule push (only if ENABLE_DAILY_PUSH)
+Sunday 18:00 (Monday 03:00 JST)       bus timetable update
+====================================  ===============================================
+
+One trigger instead of four because Pyodide cannot enter a second
+``scheduled()`` invocation while another one in the same isolate is suspended
+("Cannot enter a promising task from inside another running promising task");
+overlapping triggers poisoned the isolate for half an hour on 2026-10-02.
+The legacy per-job cron strings are still accepted by :func:`run_cron`.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+import time
+from datetime import UTC, datetime
 
 from tutnext.config import JAPAN_TZ, settings
 
@@ -31,7 +37,8 @@ CRON_MONITOR = "*/5 * * * *"
 CRON_DAILY_PUSH = "30 11 * * *"
 CRON_BUS = "0 18 * * SUN"
 
-_LA_TICKS_PER_MINUTE = 6  # keeps the server's 10 s Live Activity granularity
+_LA_TICK_SECONDS = 10  # keeps the server's 10 s Live Activity granularity
+_LA_BUDGET_SECONDS = 48  # stop ticking before the next minute's invocation starts
 
 
 def _in_silent_window(now: datetime) -> bool:
@@ -51,11 +58,23 @@ async def every_minute() -> None:
     from tutnext.services.push.live_activity import dispatch_live_activity_pushes, retry_pending_schedules
     from tutnext.services.push.pool import PushPoolManager
 
+    started = time.monotonic()
+    now_utc = datetime.now(UTC)
+
     # Scheduled push pools (07:00, 08:50, ... 21:15 JST) within ±60 s of now.
     await _safe("push_pools", PushPoolManager().process_due_pools())
 
-    # Live Activity transitions: 6 ticks of 10 s inside this invocation.
-    for tick in range(_LA_TICKS_PER_MINUTE):
+    # Less frequent jobs, folded into this single trigger (see module docstring).
+    if now_utc.minute % 5 == 0:
+        await _safe("monitor", monitor())
+    if (now_utc.hour, now_utc.minute) == (11, 30):
+        await _safe("daily_push", daily_push())
+    if now_utc.weekday() == 6 and (now_utc.hour, now_utc.minute) == (18, 0):
+        await _safe("bus_update", bus_update())
+
+    # Live Activity transitions: 10 s ticks until the time budget is spent.
+    tick = 0
+    while True:
         try:
             sent = await dispatch_live_activity_pushes()
             if sent:
@@ -67,8 +86,10 @@ async def every_minute() -> None:
             purge = getattr(redis, "purge_expired", None)
             if purge is not None:
                 await _safe("purge_expired", purge())
-        if tick < _LA_TICKS_PER_MINUTE - 1:
-            await asyncio.sleep(10)
+        tick += 1
+        if time.monotonic() - started + _LA_TICK_SECONDS > _LA_BUDGET_SECONDS:
+            break
+        await asyncio.sleep(_LA_TICK_SECONDS)
 
 
 async def monitor() -> None:

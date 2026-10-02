@@ -24,12 +24,10 @@
     }
   ],
 
-  // Background jobs (see tutnext/scheduler.py). Times are UTC:
-  //   every minute      → push pools, Live Activity dispatcher, pending retries, TTL purge
-  //   every 5 minutes   → assignment monitor (skips 03:00–06:10 JST)
-  //   11:30 UTC         → 20:30 JST next-day schedule push
-  //   Sunday 18:00 UTC  → Monday 03:00 JST bus timetable update
-  "triggers": { "crons": ["* * * * *", "*/5 * * * *", "30 11 * * *", "0 18 * * SUN"] },
+  // Background jobs (see tutnext/scheduler.py): ONE trigger; the minute job runs the
+  // 5-minute monitor, the 11:30 UTC daily push and the Sunday 18:00 UTC bus update by
+  // checking the clock. Overlapping triggers break Pyodide ("Cannot enter a promising task").
+  "triggers": { "crons": ["* * * * *"] },
 
   // On the Workers Paid plan add  "limits": { "cpu_ms": 300000 }  so a cron run can
   // scrape every user; the Free plan is fixed at 10 ms CPU per invocation and rejects it.
