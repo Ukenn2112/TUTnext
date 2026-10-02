@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
-from tutnext.api.routes import oauth, schedule, bus, kadai, push, tmail, live_activity
+from tutnext.api.routes import admin, oauth, schedule, bus, kadai, push, tmail, live_activity
 from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.core.database import db_manager
 from tutnext.config import HTTP_PROXY, IS_WORKERS
@@ -43,6 +43,7 @@ app.include_router(push.router, prefix="/push", tags=["Push"])
 app.include_router(tmail.router, prefix="/tmail", tags=["Tmail"])
 app.include_router(oauth.router, prefix="/oauth", tags=["OAuth"])
 app.include_router(live_activity.router, prefix="/live-activity", tags=["LiveActivity"])
+app.include_router(admin.router, prefix="/admin", tags=["Admin"])
 
 
 # Home page

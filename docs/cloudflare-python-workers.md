@@ -67,7 +67,7 @@ cf observability telemetry query --body "{\"queryId\":\"tutnext\",\"timeframe\":
 cf d1 migrations apply 7014de82-cb2c-4c90-853d-af0087fa0e50 --dir migrations
 ```
 
-Secrets（已上传）：`APNS_PRIVATE_KEY`（.p8 内容）、`APNS_KEY_ID`、`APNS_TEAM_ID`、`NOTIFICATION_API_URL`。
+Secrets（已上传）：`APNS_PRIVATE_KEY`（.p8 内容）、`APNS_KEY_ID`、`APNS_TEAM_ID`、`NOTIFICATION_API_URL`、`ADMIN_KEY`（§5.5 探针）。
 重新设置：`npx wrangler secret put APNS_PRIVATE_KEY < AuthKey_XXXX.p8`。
 
 Vars（`wrangler.jsonc`）：`APNS_TOPIC`、`APNS_USE_SANDBOX`、`CLIENT_ID`、`ENABLE_*`、`MONITOR_*`、`LOG_LEVEL`。
@@ -120,7 +120,7 @@ Free 计划的 cron 在约 2 s CPU 后被终止（2026-10-03 实测：263 用户
 
 | 职责 | Worker (`tutnext`) | 服务器 (`python -m tutnext`) |
 |---|---|---|
-| HTTP API（`tama.qaq.tw`） | ✅ 切换 Caddy/DNS 后 | 继续监听 2053 直到切换完成 |
+| HTTP API（`tama.qaq.tw`） | ✅ 2026-10-03 起 | 仍监听 2053（备用/回退） |
 | 课题监测（每 5 分钟） | ❌ `ENABLE_MONITOR_PUSH=false` | ✅ |
 | 20:30 次日课表推送 + push-to-start 预约 | ❌ `ENABLE_DAILY_PUSH=false` | ✅ |
 | 定时推送池（07:00…21:15） | 每分钟 cron（处理 Worker 侧 D1 中的池，通常为空） | ✅ 本地 Redis 中的池 |
@@ -173,12 +173,28 @@ tail -f /Users/meikenn/web-server/tama.qaq.tw/log/next.log   # 期待看到 “�
 
 每条 D1 REST 请求约 0.3 s；每日任务每用户约 15 条请求，263 用户并发 5 约 5 分钟内完成。
 
-### 5.4 域名切换（API → Worker）
+### 5.4 域名切换（API → Worker）— 已于 2026-10-03 07:20 JST 完成
 
-两边共享 D1，所以切换前后状态一致，可随时回退：
+`tama.qaq.tw` 现在是 Worker `tutnext` 的 Custom Domain（Cloudflare 自动创建了 `AAAA 100::` 占位记录）。
+切换前后共享同一个 D1，所以状态一致，随时可回退：
 
-1. Cloudflare Dashboard → Workers → `tutnext` → Domains & Routes，添加 Custom Domain `tama.qaq.tw`
-   （或 `cf cli search "add worker custom domain"`）。原来的 DNS 记录指向服务器的 Caddy（Cloudflare 代理），
-   自定义域会接管它。
-2. 验证 `https://tama.qaq.tw/tmail`、`/bus/app_data`、App 内登录。
-3. 回退：删除 Custom Domain，恢复指向服务器的 DNS 记录；服务器 API 一直在运行。
+```bash
+# 回退：删掉 Worker 的 Custom Domain（id c29f4556cd9d6901dc57c5a30224de255a2a854d），
+# 恢复原来的 DNS 记录（A tama.qaq.tw → 114.16.196.30，Proxied）。服务器的 API 一直在 2053 端口运行。
+TOKEN=...   # cf OAuth token 或任意有 Workers + DNS 编辑权限的 token
+curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+  https://api.cloudflare.com/client/v4/accounts/2d2e2998663fec1cd09540f68a8dd51e/workers/domains/c29f4556cd9d6901dc57c5a30224de255a2a854d
+curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  https://api.cloudflare.com/client/v4/zones/5687a087c837812507f295050cf22f52/dns_records \
+  -d '{"type":"A","name":"tama.qaq.tw","content":"114.16.196.30","proxied":true,"ttl":1}'
+```
+
+### 5.5 运维探针 `/admin/apns-probe`
+
+需要请求头 `X-Admin-Key`（Worker secret `ADMIN_KEY`；未设置时路由返回 404）。
+用假 token 探测 APNs 链路：`400 BadDeviceToken` = JWT 鉴权与 HTTP/2 连接正常；`403 InvalidProviderToken` = 密钥配置有误。
+
+```bash
+curl -X POST https://tama.qaq.tw/admin/apns-probe -H "X-Admin-Key: $ADMIN_KEY" \
+  -H 'content-type: application/json' -d '{"deviceToken":"<64 hex>","kind":"background"}'   # kind=alert 会弹出测试通知
+```

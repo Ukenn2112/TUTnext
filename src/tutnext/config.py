@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     enable_bus_scraper: bool = True  # server: weekly bus timetable job (off in hybrid, the Worker does it)
     enable_live_activity_dispatch: bool = True  # server: 10 s Live Activity dispatcher (off in hybrid)
 
+    # --- Operator diagnostics (/admin/*); unset = routes answer 404 ---
+    admin_key: Optional[str] = None
+
     # --- Storage backend (server) ---
     # "local": PostgreSQL + Redis (classic).  "d1": users/tokens and the shared cache keys live in
     # Cloudflare D1 via the REST API so the server and the Worker see one state (hybrid deployment).
