@@ -1,14 +1,11 @@
 # tutnext/api/routes/tmail.py
-import json
-from pathlib import Path
 from fastapi import APIRouter
 
-router = APIRouter()
+# 教师数据以 Python 模块形式打包（Cloudflare Workers 只上传 *.py 文件）。
+# 源数据位于 data/teachers.json，修改后运行 scripts/build_assets_data.py 重新生成。
+from tutnext.assets_data.teachers_data import TEACHERS as _teachers
 
-# 模块加载时从 JSON 文件读取教师数据并缓存在内存中
-_DATA_FILE = Path(__file__).parent.parent.parent / "data" / "teachers.json"
-with _DATA_FILE.open(encoding="utf-8") as _f:
-    _teachers: list = json.load(_f)
+router = APIRouter()
 
 
 @router.get("")

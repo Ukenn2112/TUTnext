@@ -3,9 +3,9 @@ bus_scraper.py — 巴士时刻表自动更新服务
 
 功能：
   1. 抓取 schoolbus.html，找到「通常バスダイヤ」PDF 链接
-  2. 用 aiohttp 异步下载 PDF bytes
+  2. 异步下载 PDF bytes（tutnext.core.http：服务器用 aiohttp，Workers 用 fetch）
   3. 调用 scripts/parse_bus_data.py 的解析逻辑（移植到本文件中的异步版本）
-  4. 与现有 bus_data.json 比较；若有变更则写入文件并刷新内存缓存
+  4. 与现有基准时刻表比较；若有变更则写入（文件 / D1）并刷新缓存
 
 调用方式：
     async def update_bus_schedule() -> bool
@@ -14,20 +14,18 @@ bus_scraper.py — 巴士时刻表自动更新服务
 
 import asyncio
 import io
-import json
 import logging
 import re
-import sys
-from pathlib import Path
 
-import aiohttp
 import pdfplumber
+
+from tutnext.core import http as core_http
+from tutnext.core.busdata import load_bus_data, save_bus_data
 
 logger = logging.getLogger(__name__)
 
 # ── 常量 ──────────────────────────────────────────────────────────────────────
 _SCHOOLBUS_URL = "https://www.tama.ac.jp/guide/campus/schoolbus.html"
-_BUS_DATA_PATH = Path(__file__).parent.parent / "data" / "bus_data.json"
 
 # 标准 PDF 文件名模式：bus_YYYY.pdf（平日）和 bus_YYYYwed.pdf（水曜）
 _PDF_WEEKDAY_RE = re.compile(r"img/bus_(\d{4})\.pdf$")
@@ -35,15 +33,11 @@ _PDF_WED_RE = re.compile(r"img/bus_(\d{4})wed\.pdf$")
 
 
 # ── 异步 HTTP 工具 ─────────────────────────────────────────────────────────────
-async def _get_bytes(session: aiohttp.ClientSession, url: str) -> bytes:
+async def _get_bytes(url: str) -> bytes:
     """异步 GET 并返回响应体 bytes。"""
-    async with session.get(
-        url,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=aiohttp.ClientTimeout(total=30),
-    ) as resp:
-        resp.raise_for_status()
-        return await resp.read()
+    resp = await core_http.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    resp.raise_for_status()
+    return resp.body
 
 
 # ── PDF 解析逻辑（来自 scripts/parse_bus_data.py，接受 bytes）─────────────────
@@ -221,7 +215,7 @@ async def update_bus_schedule() -> bool:
       2. 找出最新平日 / 水曜 PDF URL
       3. 并发下载两份 PDF bytes
       4. 解析为结构化数据
-      5. 与 bus_data.json 比较；有差异则写入并刷新内存缓存
+      5. 与当前基准时刻表比较；有差异则写入并刷新缓存
 
     返回：
       True  — 数据已更新
@@ -230,30 +224,29 @@ async def update_bus_schedule() -> bool:
     logger.info("开始检查巴士时刻表更新...")
 
     try:
-        async with aiohttp.ClientSession() as session:
-            # 步骤 1：拉取主页
-            logger.info("拉取 schoolbus.html")
-            html_bytes = await _get_bytes(session, _SCHOOLBUS_URL)
-            html = html_bytes.decode("utf-8", errors="replace")
+        # 步骤 1：拉取主页
+        logger.info("拉取 schoolbus.html")
+        html_bytes = await _get_bytes(_SCHOOLBUS_URL)
+        html = html_bytes.decode("utf-8", errors="replace")
 
-            # 步骤 2：解析 PDF 链接
-            url_weekday, url_wed = _find_standard_pdf_links(html)
-            if not url_weekday or not url_wed:
-                logger.warning(
-                    "未找到标准 PDF 链接（weekday=%s, wed=%s），跳过更新",
-                    url_weekday,
-                    url_wed,
-                )
-                return False
-
-            logger.info("平日 PDF: %s", url_weekday)
-            logger.info("水曜 PDF: %s", url_wed)
-
-            # 步骤 3：并发下载两份 PDF
-            weekday_bytes, wed_bytes = await asyncio.gather(
-                _get_bytes(session, url_weekday),
-                _get_bytes(session, url_wed),
+        # 步骤 2：解析 PDF 链接
+        url_weekday, url_wed = _find_standard_pdf_links(html)
+        if not url_weekday or not url_wed:
+            logger.warning(
+                "未找到标准 PDF 链接（weekday=%s, wed=%s），跳过更新",
+                url_weekday,
+                url_wed,
             )
+            return False
+
+        logger.info("平日 PDF: %s", url_weekday)
+        logger.info("水曜 PDF: %s", url_wed)
+
+        # 步骤 3：并发下载两份 PDF
+        weekday_bytes, wed_bytes = await asyncio.gather(
+            _get_bytes(url_weekday),
+            _get_bytes(url_wed),
+        )
 
         # 步骤 4：解析 PDF（CPU 密集，在事件循环中同步执行；PDF 解析耗时通常 <1s）
         logger.info("解析平日时刻表 PDF")
@@ -262,11 +255,8 @@ async def update_bus_schedule() -> bool:
         logger.info("解析水曜日时刻表 PDF")
         wednesday, _ = _parse_pdf_bytes(wed_bytes)
 
-        # 读取当前 bus_data.json 以获取 title / notes 字段
-        if _BUS_DATA_PATH.exists():
-            current_raw = json.loads(_BUS_DATA_PATH.read_text(encoding="utf-8"))
-        else:
-            current_raw = {}
+        # 读取当前基准时刻表以获取 title / notes 字段
+        current_raw = await load_bus_data()
 
         new_data = {
             "title": current_raw.get("title", "基準時刻表"),
@@ -294,21 +284,8 @@ async def update_bus_schedule() -> bool:
             logger.info("巴士时刻表无变化，跳过写入")
             return False
 
-        # 写入更新后的数据
-        _BUS_DATA_PATH.write_text(
-            json.dumps(new_data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        logger.info("巴士时刻表已更新，写入 %s", _BUS_DATA_PATH)
-
-        # 刷新内存缓存（让下次 /bus/app_data 请求立即使用新数据）
-        try:
-            from tutnext.api.routes.bus import reload_bus_data
-
-            reload_bus_data()
-            logger.info("内存缓存已刷新")
-        except Exception as cache_err:
-            logger.warning("刷新内存缓存失败（不影响数据写入）：%s", cache_err)
-
+        # 写入更新后的数据（服务器：JSON 文件；Workers：D1）
+        await save_bus_data(new_data)
         return True
 
     except Exception as e:

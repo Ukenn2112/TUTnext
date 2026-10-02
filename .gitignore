@@ -17,3 +17,10 @@ uv.lock
 
 .claude/
 .pytest_cache/
+# Cloudflare Workers (pywrangler / wrangler)
+python_modules/
+.venv-workers/
+.wrangler/
+.dev.vars
+node_modules/
+.cloudflare/

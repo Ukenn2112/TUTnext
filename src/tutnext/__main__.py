@@ -193,6 +193,7 @@ async def run_all():
     # 在所有服务启动前初始化数据库连接池（monitor 等后台任务依赖它）
     from tutnext.core.database import db_manager
     await db_manager.init_db()
+    logger.info("存储后端: %s (%s)", settings.storage_backend, db_manager.db_url)
 
     # 初始化代理自愈看门狗（配置不全时内部自动禁用）
     from tutnext.services.watchdog import init_watchdog
@@ -217,9 +218,15 @@ async def run_all():
             else:
                 logger.info("课题监测推送已禁用 (ENABLE_MONITOR_PUSH=false)")
             # 巴士时刻表自动更新 (启动时 + 每周一 3:00 JST)
-            scheduler_tasks.append(tg.create_task(schedule_bus_scraper()))
-            # Live Activity 推送调度 (每30秒)
-            scheduler_tasks.append(tg.create_task(schedule_live_activity_dispatcher()))
+            if settings.enable_bus_scraper:
+                scheduler_tasks.append(tg.create_task(schedule_bus_scraper()))
+            else:
+                logger.info("巴士时刻表更新已禁用 (ENABLE_BUS_SCRAPER=false，由 Cloudflare Worker 负责)")
+            # Live Activity 推送调度 (每10秒)
+            if settings.enable_live_activity_dispatch:
+                scheduler_tasks.append(tg.create_task(schedule_live_activity_dispatcher()))
+            else:
+                logger.info("Live Activity 调度已禁用 (ENABLE_LIVE_ACTIVITY_DISPATCH=false，由 Cloudflare Worker 负责)")
     except* (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("程序被用户中断")
     except* Exception as eg:

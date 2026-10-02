@@ -25,12 +25,11 @@ import logging
 import json
 
 from uuid import uuid4
-from aioapns import NotificationRequest, PushType
 from datetime import datetime, time
 from typing import Awaitable, Dict, Optional, Any, Literal, cast
 
 from tutnext.config import JAPAN_TZ, redis
-from tutnext.services.push.apns_client import get_apns_client
+from tutnext.services.push.apns_client import NotificationRequest, PushType, get_apns_client
 
 # 定义消息类型
 MessageType = Literal["alert", "background"]
@@ -228,27 +227,34 @@ class PushPoolManager:
             device_token=device_token, data=data, message_type="background"
         )
 
+    async def process_due_pools(self, now: Optional[datetime] = None):
+        """发送所有到达预定时间（±1 分钟）的推送池。
+
+        服务器模式由 ``_scheduler`` 每分钟调用；Workers 模式由每分钟的 Cron 调用。
+        """
+        now = now or datetime.now(JAPAN_TZ)
+        current_time = now.time()
+
+        for pool_name, pool in self.pools.items():
+            if pool.scheduled_time is not None:
+                # 检查当前时间是否接近预定时间 (允许1分钟误差)
+                scheduled_seconds = (
+                    pool.scheduled_time.hour * 3600
+                    + pool.scheduled_time.minute * 60
+                )
+                current_seconds = (
+                    current_time.hour * 3600 + current_time.minute * 60
+                )
+
+                if abs(scheduled_seconds - current_seconds) <= 60:
+                    logging.info(f"执行定时推送: {pool_name}")
+                    await pool.process_scheduled_messages()
+
     async def _scheduler(self):
         """调度器，负责定时检查并发送推送"""
         while True:
             try:
-                now = datetime.now(JAPAN_TZ)
-                current_time = now.time()
-
-                for pool_name, pool in self.pools.items():
-                    if pool.scheduled_time is not None:
-                        # 检查当前时间是否接近预定时间 (允许1分钟误差)
-                        scheduled_seconds = (
-                            pool.scheduled_time.hour * 3600
-                            + pool.scheduled_time.minute * 60
-                        )
-                        current_seconds = (
-                            current_time.hour * 3600 + current_time.minute * 60
-                        )
-
-                        if abs(scheduled_seconds - current_seconds) <= 60:
-                            logging.info(f"执行定时推送: {pool_name}")
-                            await pool.process_scheduled_messages()
+                await self.process_due_pools()
 
                 # 每分钟检查一次
                 await asyncio.sleep(60)

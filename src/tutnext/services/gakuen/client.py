@@ -26,12 +26,16 @@ import re
 import logging
 import json
 import urllib.parse
-from typing import Any, Optional, Union, Literal
+from typing import TYPE_CHECKING, Any, Optional, Union, Literal
 
 from bs4 import BeautifulSoup, Tag
 from datetime import date, datetime, timedelta
 
-from redis.exceptions import RedisError
+try:
+    from redis.exceptions import RedisError
+except ImportError:  # Cloudflare Workers: the D1-backed store has no redis package
+    class RedisError(Exception):  # type: ignore[no-redef]
+        """Placeholder so cache-write guards below stay valid without redis-py."""
 
 from tutnext.services.gakuen.errors import (
     GakuenAPIError,
@@ -44,7 +48,8 @@ from tutnext.services.gakuen.session import _SessionState
 from tutnext.services.gakuen.http import _HttpClient
 from tutnext.services.gakuen.ids import _MobilePageIds
 
-import aiohttp
+if TYPE_CHECKING:  # aiohttp is server-only; Workers use the fetch transport in http.py
+    import aiohttp
 
 _ROOM_CACHE_TTL = 604800  # 1 week
 
@@ -60,7 +65,7 @@ class GakuenAPI:
         password: str,
         base_url: str,
         encrypted_login_password: Optional[str] = None,
-        session: Optional[aiohttp.ClientSession] = None,
+        session: Optional["aiohttp.ClientSession"] = None,
         timeout: int = 20,
         http_proxy: Optional[str] = None,
     ) -> None:
@@ -754,8 +759,8 @@ class GakuenAPI:
                         pipe.sadd(f"course_users:{cn}", self.user_id)
                         pipe.expire(f"course_users:{cn}", 86400)
                     await pipe.execute()
-            except RedisError as e:
-                logger.debug("Redis cache write skipped: %s", e)
+            except Exception as e:  # noqa: BLE001 - cache failures (Redis or D1) are non-fatal
+                logger.debug("cache write skipped: %s", e)
 
             return out_data
         except Exception as e:
@@ -1393,8 +1398,8 @@ class GakuenAPI:
                     await redis.set(
                         f"room:{course_name}", info["lessonClass"], ex=_ROOM_CACHE_TTL
                     )
-        except RedisError as e:
-            logger.debug("Redis cache write skipped: %s", e)
+        except Exception as e:  # noqa: BLE001 - cache failures (Redis or D1) are non-fatal
+            logger.debug("cache write skipped: %s", e)
 
     async def _call_first_setting(self) -> dict:
         """firstSetting API を呼び出す (api_login 後に必須)

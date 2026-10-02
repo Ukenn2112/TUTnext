@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from tutnext.api.routes import oauth, schedule, bus, kadai, push, tmail, live_activity
 from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.core.database import db_manager
-from tutnext.config import HTTP_PROXY
+from tutnext.config import HTTP_PROXY, IS_WORKERS
 from tutnext.services.gakuen.session_manager import get_session_manager
 from tutnext.services.google_classroom import classroom_api
 
@@ -20,6 +20,11 @@ class UserData(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if IS_WORKERS:
+        # Workers: no connection pool to warm up and the ASGI adapter runs the
+        # lifespan per request, so keep it a no-op.
+        yield
+        return
     # 启动时初始化数据库
     await db_manager.init_db()
     yield

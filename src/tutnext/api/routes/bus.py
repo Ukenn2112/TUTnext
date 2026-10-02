@@ -5,46 +5,35 @@
 #   Layer 1b — Redis 缓存：schoolbus.html 抓取结果，key=bus:temp_schedule，TTL=600s（10分钟）
 #   Layer 1c — Redis 缓存：祝日 API 结果，key=bus:holidays:{YYYY-MM-DD}，TTL 到当天结束
 import copy
-import io
 import json
 import logging
 import re
 from datetime import datetime, timedelta
-from pathlib import Path
 
-import aiohttp
 from bs4 import BeautifulSoup, Tag
 from fastapi import APIRouter
 
-from tutnext.config import redis
+from tutnext.config import JAPAN_TZ, redis
+from tutnext.core import http as core_http
+from tutnext.core.busdata import load_bus_data, load_bus_data_file, reload_bus_data_file
 from tutnext.services.bus_parser import parse_temp_pdf
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ── Layer 1a：模块级内存缓存 bus_data.json ────────────────────────────────────
-# 巴士基准时刻表极少变化，启动后一次加载，长期驻留内存
-_BUS_DATA_PATH = Path(__file__).parent.parent.parent / "data" / "bus_data.json"
-_bus_data_cache: dict | None = None
+# ── Layer 1a：基准时刻表 ─────────────────────────────────────────────────────
+# 服务器：bus_data.json 首次请求时加载到内存；Workers：D1 中的 bus:data 键
+# （见 tutnext.core.busdata）。巴士基准时刻表极少变化。
 
 
 def _load_bus_data() -> dict:
-    """首次调用时从磁盘加载，之后直接返回内存缓存。"""
-    global _bus_data_cache
-    if _bus_data_cache is None:
-        logger.info("从磁盘加载 bus_data.json 到内存缓存")
-        _bus_data_cache = json.loads(_BUS_DATA_PATH.read_text(encoding="utf-8"))
-    assert _bus_data_cache is not None
-    return _bus_data_cache
+    """服务器模式：首次调用时从磁盘加载，之后直接返回内存缓存。"""
+    return load_bus_data_file()
 
 
 def reload_bus_data() -> dict:
-    """强制从磁盘重新加载（bus_scraper 更新数据后调用）。"""
-    global _bus_data_cache
-    logger.info("重新加载 bus_data.json 到内存缓存")
-    _bus_data_cache = json.loads(_BUS_DATA_PATH.read_text(encoding="utf-8"))
-    assert _bus_data_cache is not None
-    return _bus_data_cache
+    """服务器模式：强制从磁盘重新加载（bus_scraper 更新数据后调用）。"""
+    return reload_bus_data_file()
 
 
 # ── Layer 1b：Redis 缓存 schoolbus.html ──────────────────────────────────────
@@ -53,11 +42,10 @@ _REDIS_KEY_TEMP = "bus:temp_schedule"
 _REDIS_TTL_TEMP = 600  # 10 分钟
 
 
-async def _fetch_schoolbus_html(session: aiohttp.ClientSession | None = None) -> str:
+async def _fetch_schoolbus_html(session=None) -> str:
     """
-    优先从 Redis 取已缓存的 HTML；缓存未命中则用 aiohttp 拉取，
+    优先从 Redis 取已缓存的 HTML；缓存未命中则拉取，
     结果写入 Redis 并设 600s TTL。
-    接受可选的共享 session；若未提供则自行创建。
     """
     # 尝试 Redis 命中
     cached = await redis.get(_REDIS_KEY_TEMP)
@@ -68,16 +56,9 @@ async def _fetch_schoolbus_html(session: aiohttp.ClientSession | None = None) ->
     # 缓存未命中，异步拉取
     logger.info("Redis 未命中 bus:temp_schedule，拉取 schoolbus.html")
 
-    async def _do_fetch(s: aiohttp.ClientSession) -> str:
-        async with s.get(_SCHOOLBUS_URL, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-            resp.raise_for_status()
-            return await resp.text()
-
-    if session is not None:
-        html = await _do_fetch(session)
-    else:
-        async with aiohttp.ClientSession() as s:
-            html = await _do_fetch(s)
+    resp = await core_http.get(_SCHOOLBUS_URL, timeout=15)
+    resp.raise_for_status()
+    html = resp.text()
 
     await redis.set(_REDIS_KEY_TEMP, html, ex=_REDIS_TTL_TEMP)
     return html
@@ -87,11 +68,10 @@ async def _fetch_schoolbus_html(session: aiohttp.ClientSession | None = None) ->
 _HOLIDAYS_URL = "https://holidays-jp.github.io/api/v1/date.json"
 
 
-async def _fetch_holidays(today_str: str, session: aiohttp.ClientSession | None = None) -> dict:
+async def _fetch_holidays(today_str: str, session=None) -> dict:
     """
     优先从 Redis 取当天的祝日缓存；未命中则拉取并缓存到当天结束。
     key: bus:holidays:{YYYY-MM-DD}，TTL = 当天剩余秒数 + 60s 缓冲。
-    接受可选的共享 session；若未提供则自行创建。
     """
     redis_key = f"bus:holidays:{today_str}"
 
@@ -102,19 +82,12 @@ async def _fetch_holidays(today_str: str, session: aiohttp.ClientSession | None 
 
     logger.info("Redis 未命中 %s，拉取祝日数据", redis_key)
 
-    async def _do_fetch(s: aiohttp.ClientSession) -> dict:
-        async with s.get(_HOLIDAYS_URL, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-            resp.raise_for_status()
-            return await resp.json(content_type=None)
-
-    if session is not None:
-        holidays = await _do_fetch(session)
-    else:
-        async with aiohttp.ClientSession() as s:
-            holidays = await _do_fetch(s)
+    resp = await core_http.get(_HOLIDAYS_URL, timeout=10)
+    resp.raise_for_status()
+    holidays = resp.json()
 
     # TTL = 当天 00:00 到明天 00:00 的秒数 + 60s 缓冲，确保缓存不会跨天残留
-    now = datetime.now()
+    now = datetime.now(JAPAN_TZ)
     midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     ttl = int((midnight - now).total_seconds()) + 60
 
@@ -123,39 +96,28 @@ async def _fetch_holidays(today_str: str, session: aiohttp.ClientSession | None 
 
 
 # ── 临时 PDF 异步下载 ─────────────────────────────────────────────────────────
-async def _download_pdf_bytes(url: str, session: aiohttp.ClientSession | None = None) -> bytes:
-    """用 aiohttp 异步下载 PDF，返回原始 bytes（由 parse_temp_pdf 处理）。
-    接受可选的共享 session；若未提供则自行创建。
-    """
-    async def _do_fetch(s: aiohttp.ClientSession) -> bytes:
-        async with s.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            resp.raise_for_status()
-            return await resp.read()
-
-    if session is not None:
-        return await _do_fetch(session)
-    async with aiohttp.ClientSession() as s:
-        return await _do_fetch(s)
+async def _download_pdf_bytes(url: str, session=None) -> bytes:
+    """异步下载 PDF，返回原始 bytes（由 parse_temp_pdf 处理）。"""
+    resp = await core_http.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+    resp.raise_for_status()
+    return resp.body
 
 
 @router.get("/app_data")
 async def app_schedule():
-    # Layer 1a：从内存缓存读取基准时刻表（极少变化，无需网络）
-    app_data = copy.deepcopy(_load_bus_data())
+    # Layer 1a：读取基准时刻表（服务器：内存缓存；Workers：D1，极少变化）
+    app_data = copy.deepcopy(await load_bus_data())
 
-    now_day = datetime.now()
+    # Workers 运行在 UTC，日期判断必须使用 JST
+    now_day = datetime.now(JAPAN_TZ)
     today_ymd = now_day.strftime("%Y-%m-%d")
     today_ja = now_day.strftime("%Y年%m月%d日")
 
     _messages = []
     pin_messages = None
 
-    # 所有网络请求共用一个 aiohttp session
-    async with aiohttp.ClientSession() as session:
+    session = None
+    if True:  # 保持原有缩进结构（原来此处为共享 aiohttp session 上下文）
         # Layer 1c：获取祝日信息（Redis 缓存到当天结束）
         try:
             holidays_data = await _fetch_holidays(today_ymd, session)
@@ -167,12 +129,12 @@ async def app_schedule():
             _messages.append(
                 {
                     "title": f"本日 {now_day.strftime('%Y年%m月%d日')} 祝日授業日のスクールバス时刻表 ",
-                    "url": f"https://www.tama.ac.jp/guide/campus/img/bus_{datetime.now().year}holidays.pdf",
+                    "url": f"https://www.tama.ac.jp/guide/campus/img/bus_{now_day.year}holidays.pdf",
                 }
             )
             pin_messages = {
                 "title": "本日は祝日授業日のスクールバス時刻表らしいです",
-                "url": f"https://www.tama.ac.jp/guide/campus/img/bus_{datetime.now().year}holidays.pdf",
+                "url": f"https://www.tama.ac.jp/guide/campus/img/bus_{now_day.year}holidays.pdf",
             }
 
         # Layer 1b：获取临时巴士页面（Redis 缓存 10 分钟）
@@ -306,7 +268,7 @@ async def app_schedule():
         if pin_messages:
             try:
                 pdf_bytes = await _download_pdf_bytes(pin_messages["url"], session)
-                pin_data = parse_temp_pdf(pdf_bytes)
+                pin_data = parse_temp_pdf(pdf_bytes, now_day.date())
             except Exception as e:
                 logger.warning("临时 PDF 解析失败：%s", e)
             else:

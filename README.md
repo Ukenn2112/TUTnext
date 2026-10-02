@@ -64,10 +64,10 @@ src/tutnext/
 | コンポーネント | 技術 |
 |--------------|------|
 | 言語 | Python 3.12+ |
-| Web フレームワーク | FastAPI + Uvicorn (ASGI) |
+| Web フレームワーク | FastAPI + Uvicorn (ASGI) / Cloudflare Python Workers ASGI |
 | パッケージ管理 | uv |
-| データベース | PostgreSQL (asyncpg) |
-| キャッシュ | Redis |
+| データベース | PostgreSQL (asyncpg) / Cloudflare D1 |
+| キャッシュ | Redis / D1 (Redis 互換アダプター) |
 | HTTP クライアント | aiohttp (非同期) |
 | プッシュ通知 | Apple APNs (aioapns) |
 | カレンダー生成 | icalendar |
@@ -75,6 +75,19 @@ src/tutnext/
 | PDF 解析 | pdfplumber |
 | テスト | pytest + pytest-asyncio |
 | 設定管理 | pydantic-settings |
+
+## Cloudflare Python Workers デプロイ
+
+同じコードベースを Cloudflare Python Workers にデプロイできます（2026-10 より本番: <https://tutnext.ukenn.workers.dev>）。
+PostgreSQL / Redis の代わりに D1、aiohttp / aioapns の代わりに `fetch`、常駐ループの代わりに Cron Triggers を使います。
+現在はハイブリッド構成です: Worker が API / Live Activity / バス更新を担当し、課題モニターと 20:30 のプッシュはサーバー（`STORAGE_BACKEND=d1` で同じ D1 を共有）が担当します。
+手順・制限事項は [docs/cloudflare-python-workers.md](docs/cloudflare-python-workers.md) を参照してください。
+
+```bash
+uv sync --extra server          # 開発・テスト用（サーバーモードの依存を含む）
+uv run pywrangler dev           # ローカル実行（workerd + Pyodide）
+uv run pywrangler deploy        # デプロイ
+```
 
 ## インストールガイド
 

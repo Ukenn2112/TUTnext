@@ -4,21 +4,30 @@ version = "0.1.0"
 description = "TUTnext - Tama University schedule management and notification backend"
 requires-python = ">=3.12"
 dependencies = [
+    # Runtime-neutral: used by both the server process and the Cloudflare Python Worker.
+    # (Pure-Python or shipped by Pyodide; see https://pyodide.org/en/stable/usage/packages-in-pyodide.html)
     "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.30.0",
-    "aiohttp>=3.10.0",
-    "asyncpg>=0.30.0",
-    "icalendar>=6.0.0",
-    "lxml>=5.0.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.5.0",
     "beautifulsoup4>=4.12.0",
-    "redis>=5.0.0",
-    "aioapns>=3.0",
+    "lxml>=5.0.0",
+    "icalendar>=6.0.0",
     "pytz>=2024.1",
     "PyJWT>=2.9.0",
     "cryptography>=43.0.0",
-    "python-dotenv>=1.0.0",
     "pdfplumber>=0.11.0",
-    "pydantic-settings>=2.5.0",
+]
+
+[project.optional-dependencies]
+# Classic server deployment (python -m tutnext): uvicorn, PostgreSQL, Redis, aiohttp, aioapns, ESXi watchdog.
+# These have no WebAssembly wheels and are not vendored into the Worker.
+server = [
+    "uvicorn[standard]>=0.30.0",
+    "aiohttp>=3.10.0",
+    "asyncpg>=0.30.0",
+    "redis>=5.0.0",
+    "aioapns>=3.0",
+    "python-dotenv>=1.0.0",
     "requests>=2.31.0",
     "pyvmomi>=8.0.3",
 ]
@@ -44,7 +53,22 @@ dev = [
     "httpx>=0.27.0",
     "types-pytz>=2026.1.1.20260304",
     "lupa>=2.8",
+    "workers-py>=1.17.6",
+    "workers-runtime-sdk>=1.9.2",
 ]
+
+[tool.uv]
+# pdfplumber depends on pypdfium2 (native PDFium) which has no Pyodide/WASM wheel.
+# Only pdfplumber's rendering (Page.to_image) needs it; table/text extraction is pure
+# pdfminer.six, so the dependency is dropped for every environment.
+override-dependencies = [
+    "pypdfium2 ; sys_platform == 'never'",
+    # Pillow is only used by pdfplumber.display (page rendering), never imported on our path.
+    "pillow ; sys_platform == 'never'",
+]
+
+[tool.pywrangler]
+allow-build = false
 
 [tool.ruff]
 line-length = 120

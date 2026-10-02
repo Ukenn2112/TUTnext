@@ -24,20 +24,18 @@ from datetime import datetime, timedelta
 from datetime import time as dt_time
 from uuid import uuid4
 
-from aioapns import NotificationRequest, PushType
-
-from tutnext.config import APNS_CONFIG, JAPAN_TZ, redis
+from tutnext.config import JAPAN_TZ, live_activity_topic, redis
 from tutnext.services.gakuen.client import GakuenAPIError
 from tutnext.services.gakuen.session_manager import get_session_manager
-from tutnext.services.push.apns_client import get_apns_client
+from tutnext.services.push.apns_client import NotificationRequest, PushType, get_apns_client
 
 logger = logging.getLogger(__name__)
 
 # Apple reference date offset: 2001-01-01 00:00:00 UTC
 _APPLE_EPOCH_OFFSET = 978307200.0
 
-# APNs topic for Live Activity (main app bundle ID, NOT widget)
-_LA_APNS_TOPIC = f"{APNS_CONFIG['topic']}.push-type.liveactivity"
+# APNs topic for Live Activity (main app bundle ID, NOT widget) — resolved lazily
+# via config.live_activity_topic() because Worker secrets are unavailable at import.
 
 # Swift ActivityAttributes type name (required by push-to-start payloads)
 _LA_ATTRIBUTES_TYPE = "ClassLiveActivityAttributes"
@@ -733,7 +731,7 @@ async def _send_la_push(
         notification_id=str(uuid4()),
         push_type=PushType.LIVEACTIVITY,
         priority=priority,
-        apns_topic=_LA_APNS_TOPIC,
+        apns_topic=live_activity_topic(),
     )
 
     try:

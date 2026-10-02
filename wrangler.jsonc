@@ -1,0 +1,49 @@
+{
+  // TUTnext backend on Cloudflare Python Workers.
+  // Deploy:  uv run pywrangler deploy     (or: cf deploy)
+  // Dev:     uv run pywrangler dev
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tutnext",
+  "main": "src/worker.py",
+  "compatibility_date": "2026-10-02",
+  "compatibility_flags": ["python_workers"],
+  "workers_dev": true,
+  "observability": { "enabled": true },
+
+  // Static pages (/, /policy, /user-agreement) are served from Assets;
+  // html_handling maps /policy → policy.html. API routes fall through to the Worker.
+  "assets": { "directory": "./src/tutnext/static", "binding": "ASSETS" },
+
+  // Users, OAuth tokens and the Redis-compatible key/value store (tutnext.core.d1redis)
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tutnext",
+      "database_id": "7014de82-cb2c-4c90-853d-af0087fa0e50",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  // Background jobs (see tutnext/scheduler.py). Times are UTC:
+  //   every minute      → push pools, Live Activity dispatcher, pending retries, TTL purge
+  //   every 5 minutes   → assignment monitor (skips 03:00–06:10 JST)
+  //   11:30 UTC         → 20:30 JST next-day schedule push
+  //   Sunday 18:00 UTC  → Monday 03:00 JST bus timetable update
+  "triggers": { "crons": ["* * * * *", "*/5 * * * *", "30 11 * * *", "0 18 * * SUN"] },
+
+  // On the Workers Paid plan add  "limits": { "cpu_ms": 300000 }  so a cron run can
+  // scrape every user; the Free plan is fixed at 10 ms CPU per invocation and rejects it.
+
+  // Non-secret configuration. Secrets (wrangler secret put):
+  //   APNS_PRIVATE_KEY (PEM), APNS_KEY_ID, APNS_TEAM_ID, NOTIFICATION_API_URL (optional)
+  "vars": {
+    "LOG_LEVEL": "INFO",
+    "APNS_TOPIC": "com.meikenn.tama",
+    "APNS_USE_SANDBOX": "false",
+    "CLIENT_ID": "87800423252-m54i673pp45dohr68d50jb2l6j2vigbf.apps.googleusercontent.com",
+    "ENABLE_MONITOR_PUSH": "false",
+    "ENABLE_DAILY_PUSH": "false",
+    "MONITOR_INTERVAL_SECONDS": "240",
+    "MONITOR_MAX_CONCURRENT": "3"
+  }
+}
