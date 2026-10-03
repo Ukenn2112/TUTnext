@@ -31,7 +31,7 @@ BASE_URL = "https://next.tama.ac.jp"
 SESSION_TTL = 300  # 缓存 session 最多 5 分钟
 # 等待 per-user lock 的上限。Cloudflare Workers 里一个请求可能被运行时直接终止（CPU 超限等），
 # 它持有的 asyncio.Lock 永远不会释放；后续同一用户的请求若无限等待，会被判定为"挂起"而取消。
-LOCK_TIMEOUT = 40.0
+LOCK_TIMEOUT = 120.0
 
 
 @asynccontextmanager

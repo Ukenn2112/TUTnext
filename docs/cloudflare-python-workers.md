@@ -107,8 +107,9 @@ Cloudflare 无法访问内网的 PostgreSQL（192.168.1.77）和 Redis，所以�
   粒度相同，但 cron 本身可能有数秒抖动。
 * **Session 缓存**：`session_manager` 的 per-user 锁和已登录 `GakuenAPI` 缓存只在单个 isolate 内有效；
   多 isolate 并发同一用户时仍可能触发学校系统的「他端末で同時に実行」，现有的重试逻辑会处理。
-  锁等待有 40 s 上限（`LOCK_TIMEOUT`）：被运行时直接终止的请求（CPU 超限等）不会释放锁，
-  超时后重建锁，避免后续同一用户的请求被判定为"挂起"而取消（2026-10-03 的 `/kadai` 取消就是这个原因）。
+  同一用户的并发请求排队等锁最多 20 s（`LOCK_WAIT_SECONDS`），超过就返回可重试的
+  「他端末で同時に実行中」错误（路由会自动重试一次），因为 Workers 运行时会把等待 25–40 s 没有响应的请求
+  当作"挂起"直接取消；锁被持有超过 150 s（`STALE_LOCK_SECONDS`）则视为持有者已被运行时终止，重建锁。
 * **Redis 语义差异**：`core/d1redis.py` 返回 `str`（相当于 `decode_responses=True`）；TTL 在读取时判定、
   由每分钟 cron 清理；`pipeline()` 是一次 D1 `batch`。`eval` 只实现了 Live Activity 的「原子弹出到期成员」脚本。
 * **pdfplumber**：`pypdfium2` 没有 WASM 轮子，`pyproject.toml` 用 `[tool.uv] override-dependencies` 排除它和 Pillow；
