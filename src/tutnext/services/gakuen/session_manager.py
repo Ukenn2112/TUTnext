@@ -29,26 +29,11 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://next.tama.ac.jp"
 SESSION_TTL = 300  # 缓存 session 最多 5 分钟
-# 等待 per-user lock 的上限。Cloudflare Workers 里一个请求可能被运行时直接终止（CPU 超限等），
-# 它持有的 asyncio.Lock 永远不会释放；后续同一用户的请求若无限等待，会被判定为"挂起"而取消。
-LOCK_TIMEOUT = 120.0
-
-
-@asynccontextmanager
-async def _locked(us: "_UserSession", username: str):
-    """``async with us.lock`` 加超时：超时则视为锁被已死亡的请求遗留，重建锁后继续。"""
-    try:
-        await asyncio.wait_for(us.lock.acquire(), LOCK_TIMEOUT)
-    except TimeoutError:
-        logger.warning("[SessionManager] 等待 %s 的锁超过 %.0fs，视为遗留锁并重建", username, LOCK_TIMEOUT)
-        us.lock = asyncio.Lock()
-        us.gakuen = None
-        await us.lock.acquire()
-    try:
-        yield
-    finally:
-        if us.lock.locked():
-            us.lock.release()
+# 等待 per-user lock 的上限。等待太久的请求会被 Cloudflare 运行时判定为"挂起"并取消（实测 25–40 s），
+# 所以超过 LOCK_WAIT_SECONDS 就直接返回可重试的错误，让调用方按「他端末で同時に実行」路径重试。
+LOCK_WAIT_SECONDS = 20.0
+# 锁被持有超过这个时间视为遗留锁（持有者已被运行时直接终止，例如 CPU 超限），重建后继续。
+STALE_LOCK_SECONDS = 150.0
 
 
 @dataclass
@@ -56,6 +41,35 @@ class _UserSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     gakuen: GakuenAPI | None = None
     last_used: float = 0.0
+    held_since: float = 0.0
+
+
+@asynccontextmanager
+async def _locked(us: _UserSession, username: str):
+    """``async with us.lock`` 加等待上限与遗留锁检测。"""
+    from tutnext.services.gakuen.errors import GakuenAPIError
+
+    try:
+        await asyncio.wait_for(us.lock.acquire(), LOCK_WAIT_SECONDS)
+    except TimeoutError:
+        held = time.monotonic() - us.held_since if us.held_since else 0.0
+        if held > STALE_LOCK_SECONDS:
+            logger.warning("[SessionManager] %s 的锁已被持有 %.0fs，视为遗留锁并重建", username, held)
+            us.lock = asyncio.Lock()
+            us.gakuen = None
+            await us.lock.acquire()
+        else:
+            raise GakuenAPIError(
+                "他端末で同時に実行中の処理があります。しばらくしてから再試行してください。",
+                error_code="SESSION_BUSY",
+            ) from None
+    us.held_since = time.monotonic()
+    try:
+        yield
+    finally:
+        us.held_since = 0.0
+        if us.lock.locked():
+            us.lock.release()
 
 
 class SessionManager:
