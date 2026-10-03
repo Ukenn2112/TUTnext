@@ -229,3 +229,4 @@ tutnext-cron (Python, wrangler.cron.jsonc, src/cron_worker.py)   唯一的 * * *
 * **域名回退**：把 Custom Domain 指回 API Worker：
   `PUT /accounts/{acc}/workers/domains  {"hostname":"tama.qaq.tw","service":"tutnext","zone_id":"5687a087c837812507f295050cf22f52","environment":"production","override_existing_origin":true}`
 * **已知遗留**：per-user session 锁是 isolate 内的 `asyncio.Lock`，cron（LA 拉课表）和 API 现在必然在不同 isolate，同一用户可能同时登录 T-NEXT；计划改为 D1 租约锁。
+* **cron 迁移踩坑**：把 cron 从 `tutnext` 挪到 `tutnext-cron` 时，`wrangler deploy` 后 schedules API 显示已更新，但旧 Worker 继续触发 35 分钟、新 Worker 从未触发；对两个 Worker 重新 `PUT /accounts/{acc}/workers/scripts/{name}/schedules` 后约 3 分钟完成交接（23:54 UTC 有一分钟两边都跑了）。
