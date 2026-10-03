@@ -207,3 +207,25 @@ curl -X POST -H "Authorization: Bearer $TOKEN" -H 'content-type: application/jso
 curl -X POST https://tama.qaq.tw/admin/apns-probe -H "X-Admin-Key: $ADMIN_KEY" \
   -H 'content-type: application/json' -d '{"deviceToken":"<64 hex>","kind":"background"}'   # kind=alert 会弹出测试通知
 ```
+
+## 6. Worker 拆分（2026-10-04，Workers Paid）
+
+```
+tama.qaq.tw ──▶ tutnext-gateway (TS, gateway/)       静态页 + 转发 API；Python 冷启动失败重试一次，40 s 超时 → 504
+                   └─ service binding API ─▶ tutnext (Python, wrangler.jsonc)   FastAPI，无 cron
+tutnext-cron (Python, wrangler.cron.jsonc, src/cron_worker.py)   唯一的 * * * * * 触发器，不导入 FastAPI/pdfplumber
+三者共用 D1 `tutnext`；服务器继续跑 monitor（§5）
+```
+
+* **为什么拆**：免费版 10 ms CPU 让冷启动中途被杀，isolate 之后每次调用 1 ms 内抛 `ErrnoError`，cron 连续坏 8 小时（10-03 22:59–10-04 07:21 JST）；cron 与 API 共用 isolate 时还会撞 Pyodide 的 `Cannot enter a promising task`。现在 Paid 计划 `limits.cpu_ms = 30000`，cron 与 API 分属不同 Worker。
+* **重试规则**：FastAPI 中间件给每个响应加 `x-tutnext-app: 1`。网关只在 binding 抛错、或 3 s 内返回不带该标记的 500/502/503（运行时错误）时重试一次；应用自己的 5xx（例如密码错误的 `GET /schedule`）绝不重放，避免重复登录学校系统。
+* **部署**：
+  ```bash
+  uv run pywrangler deploy                          # tutnext (API)
+  uv run pywrangler deploy -c wrangler.cron.jsonc   # tutnext-cron
+  (cd gateway && npm ci && npx wrangler deploy)     # tutnext-gateway
+  ```
+  `tutnext-cron` 的 secrets（APNS_PRIVATE_KEY / APNS_KEY_ID / APNS_TEAM_ID / NOTIFICATION_API_URL）单独设置：`npx wrangler secret bulk <json> --name tutnext-cron`。
+* **域名回退**：把 Custom Domain 指回 API Worker：
+  `PUT /accounts/{acc}/workers/domains  {"hostname":"tama.qaq.tw","service":"tutnext","zone_id":"5687a087c837812507f295050cf22f52","environment":"production","override_existing_origin":true}`
+* **已知遗留**：per-user session 锁是 isolate 内的 `asyncio.Lock`，cron（LA 拉课表）和 API 现在必然在不同 isolate，同一用户可能同时登录 T-NEXT；计划改为 D1 租约锁。
