@@ -29,8 +29,9 @@
   // checking the clock. Overlapping triggers break Pyodide ("Cannot enter a promising task").
   "triggers": { "crons": ["* * * * *"] },
 
-  // On the Workers Paid plan add  "limits": { "cpu_ms": 300000 }  so a cron run can
-  // scrape every user; the Free plan is fixed at 10 ms CPU per invocation and rejects it.
+  // Workers Paid plan: 30 s CPU per invocation (Free is 10 ms, which killed cold starts
+  // mid-init and left isolates broken). Crons under a 1 h interval are capped at 30 s anyway.
+  "limits": { "cpu_ms": 30000 },
 
   // Non-secret configuration. Secrets (wrangler secret put):
   //   APNS_PRIVATE_KEY (PEM), APNS_KEY_ID, APNS_TEAM_ID, NOTIFICATION_API_URL (optional)
