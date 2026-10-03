@@ -21,21 +21,40 @@ import logging
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Optional
 
-from tutnext.services.gakuen.client import GakuenAPI
 from tutnext.config import HTTP_PROXY
+from tutnext.services.gakuen.client import GakuenAPI
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://next.tama.ac.jp"
 SESSION_TTL = 300  # 缓存 session 最多 5 分钟
+# 等待 per-user lock 的上限。Cloudflare Workers 里一个请求可能被运行时直接终止（CPU 超限等），
+# 它持有的 asyncio.Lock 永远不会释放；后续同一用户的请求若无限等待，会被判定为"挂起"而取消。
+LOCK_TIMEOUT = 40.0
+
+
+@asynccontextmanager
+async def _locked(us: "_UserSession", username: str):
+    """``async with us.lock`` 加超时：超时则视为锁被已死亡的请求遗留，重建锁后继续。"""
+    try:
+        await asyncio.wait_for(us.lock.acquire(), LOCK_TIMEOUT)
+    except TimeoutError:
+        logger.warning("[SessionManager] 等待 %s 的锁超过 %.0fs，视为遗留锁并重建", username, LOCK_TIMEOUT)
+        us.lock = asyncio.Lock()
+        us.gakuen = None
+        await us.lock.acquire()
+    try:
+        yield
+    finally:
+        if us.lock.locked():
+            us.lock.release()
 
 
 @dataclass
 class _UserSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    gakuen: Optional[GakuenAPI] = None
+    gakuen: GakuenAPI | None = None
     last_used: float = 0.0
 
 
@@ -66,7 +85,7 @@ class SessionManager:
         """
         us = await self._get_user_session(username)
 
-        async with us.lock:
+        async with _locked(us, username):
             now = time.monotonic()
 
             # 检查缓存是否可用
@@ -114,7 +133,7 @@ class SessionManager:
         用于 web login 和 api_login 等不走 mobile login 的场景。
         """
         us = await self._get_user_session(username)
-        async with us.lock:
+        async with _locked(us, username):
             yield
 
     async def _close_session(self, us: _UserSession) -> None:
@@ -157,7 +176,7 @@ class SessionManager:
 
 
 # 模块级单例
-_session_manager: Optional[SessionManager] = None
+_session_manager: SessionManager | None = None
 
 
 def get_session_manager() -> SessionManager:

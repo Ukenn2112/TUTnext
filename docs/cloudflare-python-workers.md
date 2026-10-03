@@ -30,13 +30,19 @@ Pydantic 模型、Gakuen 解析器、Live Activity 过渡计算与推送池逻�
 
 ### Cron 对照（UTC）
 
-Worker 只配置 **一个** 触发器 `* * * * *`；`scheduler.every_minute()` 根据时钟决定本分钟还要做什么。
-原因：Pyodide 不能在一个 `scheduled()` 调用挂起时进入第二个（"Cannot enter a promising task from
-inside another running promising task"），2026-10-02 四个触发器重叠时曾让 isolate 连续失败 28 分钟。
+Worker 只配置 **一个** 触发器 `* * * * *`，`scheduler.every_minute()` 根据时钟决定本分钟还要做什么，
+而且每次调用只跑一遍（约 1–2 s）。两条硬约束都来自 2026-10-03 的线上事故：
+
+* Pyodide 在一个 Python 调用挂起时不允许进入第二个调用（`SystemError: Cannot enter a promising
+  task from inside another running promising task`）。Cloudflare 每隔约 5 分钟会把这个每分钟 cron
+  多触发一次（:06–:15 秒），只要上一次调用还没结束，这次 cron 和同一时刻到达的 API 请求都会失败。
+  cron 跑 44 s 时，约 1/3 的 API 请求撞上了它。
+* 因此 Live Activity 的调度粒度从服务器的 10 s 变为 60 s（cron 在每分钟的 :55 秒左右触发，
+  整点开始的过渡会晚约 55 s 推送）。要恢复 10 s 粒度需改用 Durable Object alarm，而不是在 cron 里循环。
 
 | 时机（UTC） | JST | 作业 |
 |---|---|---|
-| 每分钟 | 每分钟 | 定时推送池（07:00…21:15）、Live Activity 调度（10 s 一次，约 48 s 预算）、`/register` 失败重试、过期键清理 |
+| 每分钟 | 每分钟 | 定时推送池（07:00…21:15）、Live Activity 调度（一遍）、`/register` 失败重试、过期键清理 |
 | 分钟 % 5 == 0 | 每 5 分钟 | 课题监测（仅当 `ENABLE_MONITOR_PUSH=true`；3:00–6:10 静默窗口内跳过） |
 | 11:30 | 20:30 | 次日课表推送（仅当 `ENABLE_DAILY_PUSH=true`） |
 | 周日 18:00 | 周一 03:00 | 巴士时刻表更新 |
@@ -101,6 +107,8 @@ Cloudflare 无法访问内网的 PostgreSQL（192.168.1.77）和 Redis，所以�
   粒度相同，但 cron 本身可能有数秒抖动。
 * **Session 缓存**：`session_manager` 的 per-user 锁和已登录 `GakuenAPI` 缓存只在单个 isolate 内有效；
   多 isolate 并发同一用户时仍可能触发学校系统的「他端末で同時に実行」，现有的重试逻辑会处理。
+  锁等待有 40 s 上限（`LOCK_TIMEOUT`）：被运行时直接终止的请求（CPU 超限等）不会释放锁，
+  超时后重建锁，避免后续同一用户的请求被判定为"挂起"而取消（2026-10-03 的 `/kadai` 取消就是这个原因）。
 * **Redis 语义差异**：`core/d1redis.py` 返回 `str`（相当于 `decode_responses=True`）；TTL 在读取时判定、
   由每分钟 cron 清理；`pipeline()` 是一次 D1 `batch`。`eval` 只实现了 Live Activity 的「原子弹出到期成员」脚本。
 * **pdfplumber**：`pypdfium2` 没有 WASM 轮子，`pyproject.toml` 用 `[tool.uv] override-dependencies` 排除它和 Pillow；

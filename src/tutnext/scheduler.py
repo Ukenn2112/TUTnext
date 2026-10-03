@@ -8,8 +8,8 @@ the clock, the less frequent jobs:
 ====================================  ===============================================
 when (UTC)                            job
 ====================================  ===============================================
-every minute                          push pools, Live Activity dispatcher (10 s ticks
-                                      until ~50 s elapsed), pending retries, TTL purge
+every minute                          push pools, Live Activity dispatcher (one pass),
+                                      pending retries, TTL purge
 minute % 5 == 0 (not 3:00–6:10 JST)   assignment monitor (only if ENABLE_MONITOR_PUSH)
 11:30                                 next-day schedule push (only if ENABLE_DAILY_PUSH)
 Sunday 18:00 (Monday 03:00 JST)       bus timetable update
@@ -23,7 +23,6 @@ The legacy per-job cron strings are still accepted by :func:`run_cron`.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from datetime import UTC, datetime
@@ -37,8 +36,6 @@ CRON_MONITOR = "*/5 * * * *"
 CRON_DAILY_PUSH = "30 11 * * *"
 CRON_BUS = "0 18 * * SUN"
 
-_LA_TICK_SECONDS = 10  # keeps the server's 10 s Live Activity granularity
-_LA_BUDGET_SECONDS = 48  # stop ticking before the next minute's invocation starts
 
 
 def _in_silent_window(now: datetime) -> bool:
@@ -72,24 +69,21 @@ async def every_minute() -> None:
     if now_utc.weekday() == 6 and (now_utc.hour, now_utc.minute) == (18, 0):
         await _safe("bus_update", bus_update())
 
-    # Live Activity transitions: 10 s ticks until the time budget is spent.
-    tick = 0
-    while True:
-        try:
-            sent = await dispatch_live_activity_pushes()
-            if sent:
-                logger.info("LA dispatcher: sent %d pushes", sent)
-        except Exception as e:  # noqa: BLE001
-            logger.error("LA dispatcher error: %s", e)
-        if tick == 0:
-            await _safe("la_pending_retry", retry_pending_schedules())
-            purge = getattr(redis, "purge_expired", None)
-            if purge is not None:
-                await _safe("purge_expired", purge())
-        tick += 1
-        if time.monotonic() - started + _LA_TICK_SECONDS > _LA_BUDGET_SECONDS:
-            break
-        await asyncio.sleep(_LA_TICK_SECONDS)
+    # Live Activity transitions: ONE pass per invocation. Keeping the invocation short matters
+    # more than the server's 10 s granularity: while a Python invocation is suspended in this
+    # isolate, any other event entering Python fails with Pyodide's "Cannot enter a promising
+    # task" SystemError, so a 48 s loop here made ~1/3 of API requests fail (2026-10-03).
+    try:
+        sent = await dispatch_live_activity_pushes()
+        if sent:
+            logger.info("LA dispatcher: sent %d pushes", sent)
+    except Exception as e:  # noqa: BLE001
+        logger.error("LA dispatcher error: %s", e)
+    await _safe("la_pending_retry", retry_pending_schedules())
+    purge = getattr(redis, "purge_expired", None)
+    if purge is not None:
+        await _safe("purge_expired", purge())
+    logger.info("every_minute done in %.1fs", time.monotonic() - started)
 
 
 async def monitor() -> None:
