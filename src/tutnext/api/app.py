@@ -35,6 +35,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+
+@app.middleware("http")
+async def mark_app_response(request, call_next):
+    # tutnext-gateway retries a 5xx only when this marker is absent (a Workers runtime
+    # failure); 5xx answers produced by the app itself must never be replayed.
+    response = await call_next(request)
+    response.headers["x-tutnext-app"] = "1"
+    return response
+
 # Include other routes
 app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
 app.include_router(bus.router, prefix="/bus", tags=["Bus"])
