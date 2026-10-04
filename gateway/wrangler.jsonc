@@ -1,6 +1,6 @@
 {
   // TUTnext edge gateway (TypeScript). Owns tama.qaq.tw, serves the static pages and
-  // forwards every API call to the Python API Worker `tutnext` over a service binding.
+  // forwards API calls over service bindings: /bus/* → `tutnext-bus`, the rest → `tutnext`.
   // A JS Worker cold-starts in milliseconds and never hits Pyodide's isolate failures,
   // so it can retry a Python cold-start failure and turn hangs into a clean 504.
   // Deploy:  cd gateway && npx wrangler deploy
@@ -15,5 +15,8 @@
   // /policy → policy.html); everything else falls through to the Worker.
   "assets": { "directory": "../src/tutnext/static", "binding": "ASSETS" },
 
-  "services": [{ "binding": "API", "service": "tutnext" }]
+  "services": [
+    { "binding": "API", "service": "tutnext" },
+    { "binding": "BUS", "service": "tutnext-bus" }
+  ]
 }

@@ -16,7 +16,6 @@ from fastapi import APIRouter
 from tutnext.config import JAPAN_TZ, redis
 from tutnext.core import http as core_http
 from tutnext.core.busdata import load_bus_data, load_bus_data_file, reload_bus_data_file
-from tutnext.services.bus_parser import parse_temp_pdf
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -268,6 +267,9 @@ async def app_schedule():
         if pin_messages:
             try:
                 pdf_bytes = await _download_pdf_bytes(pin_messages["url"], session)
+                # Lazy: pdfplumber/pdfminer stay out of every cold start that never parses a PDF.
+                from tutnext.services.bus_parser import parse_temp_pdf
+
                 pin_data = parse_temp_pdf(pdf_bytes, now_day.date())
             except Exception as e:
                 logger.warning("临时 PDF 解析失败：%s", e)

@@ -1,5 +1,5 @@
 /**
- * tutnext-gateway: forwards API traffic to the Python API Worker (`tutnext`).
+ * tutnext-gateway: forwards API traffic to the Python Workers (`tutnext`, `tutnext-bus`).
  *
  * The Python Worker fails in two characteristic ways (see docs/cloudflare-python-workers.md):
  *  - a cold start that collides with another request throws Pyodide's
@@ -14,8 +14,13 @@
  */
 
 export interface Env {
-  API: Fetcher;
+  API: Fetcher; // tutnext: FastAPI (T-NEXT login, schedule, kadai, push, Live Activity, OAuth)
+  BUS: Fetcher; // tutnext-bus: /bus routes (public timetable, temporary-schedule PDFs)
   ASSETS: Fetcher;
+}
+
+function upstreamFor(env: Env, path: string): Fetcher {
+  return path === "/bus" || path.startsWith("/bus/") ? env.BUS : env.API;
 }
 
 // Upstream budget per attempt. School-system scraping normally finishes in < 15 s.
@@ -33,13 +38,13 @@ function jsonError(status: number, message: string): Response {
   return Response.json({ status: false, message }, { status });
 }
 
-async function callApi(env: Env, request: Request, body: ArrayBuffer | null, attempt: number) {
+async function callUpstream(upstreamWorker: Fetcher, request: Request, body: ArrayBuffer | null, attempt: number) {
   const headers = new Headers(request.headers);
   headers.set("x-tutnext-gateway-attempt", String(attempt));
   const upstream = new Request(request.url, { method: request.method, headers, body, redirect: "manual" });
   const started = Date.now();
   try {
-    const response = await env.API.fetch(upstream, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
+    const response = await upstreamWorker.fetch(upstream, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
     return { response, error: null as unknown, elapsed: Date.now() - started };
   } catch (error) {
     return { response: null, error, elapsed: Date.now() - started };
@@ -51,8 +56,9 @@ export default {
     // Bodies are small JSON payloads; buffer them so a retry can resend the same bytes.
     const body = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
     const path = new URL(request.url).pathname;
+    const upstreamWorker = upstreamFor(env, path);
 
-    let result = await callApi(env, request, body, 1);
+    let result = await callUpstream(upstreamWorker, request, body, 1);
     const fastFailure =
       result.elapsed < FAST_FAILURE_MS &&
       (result.error !== null || (result.response !== null && isRuntimeFailure(result.response)));
@@ -61,7 +67,7 @@ export default {
         JSON.stringify({ event: "retry", path, status: result.response?.status ?? null, error: String(result.error ?? ""), elapsed: result.elapsed }),
       );
       await result.response?.body?.cancel();
-      result = await callApi(env, request, body, 2);
+      result = await callUpstream(upstreamWorker, request, body, 2);
     }
 
     if (result.response) return result.response;

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+from tutnext.api.markers import install_gateway_markers
 from tutnext.api.routes import admin, oauth, schedule, bus, kadai, push, tmail, live_activity
 from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.core.database import db_manager
@@ -36,13 +37,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.middleware("http")
-async def mark_app_response(request, call_next):
-    # tutnext-gateway retries a 5xx only when this marker is absent (a Workers runtime
-    # failure); 5xx answers produced by the app itself must never be replayed.
-    response = await call_next(request)
-    response.headers["x-tutnext-app"] = "1"
-    return response
+install_gateway_markers(app)
 
 # Include other routes
 app.include_router(schedule.router, prefix="/schedule", tags=["Schedule"])
@@ -75,14 +70,13 @@ async def policy_page():
 
 @app.post("/login_check")
 async def login_check(data: UserData):
-    async with get_session_manager().lock_only(data.username):
-        gakuen = GakuenAPI(data.username, data.password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
-        try:
-            await gakuen.api_login()
-            return {"status": "success"}
-        except GakuenAPIError as e:
-            return {"status": "error", "message": str(e)}
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-        finally:
-            await gakuen.close()
+    try:
+        async with get_session_manager().lock_only(data.username):
+            gakuen = GakuenAPI(data.username, data.password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
+            try:
+                await gakuen.api_login()
+                return {"status": "success"}
+            finally:
+                await gakuen.close()
+    except Exception as e:  # GakuenAPIError (incl. SESSION_BUSY from the lock) or anything else
+        return {"status": "error", "message": str(e)}
