@@ -206,12 +206,14 @@ def _cmd_incr(key: str, amount: int = 1, purge: bool = True) -> Command:
     stmts.append(
         (
             "INSERT INTO kv_string (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(kv_string.value AS INTEGER) + ? AS TEXT) "
+            # CAST the bound amount too: from Workers a Python int arrives as a JS number and
+            # D1 binds it as REAL, which made the stored text "2.0" and broke int() readers.
+            "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(kv_string.value AS INTEGER) + CAST(? AS INTEGER) AS TEXT) "
             "RETURNING value",
-            (key, str(amount), amount),
+            (key, str(amount), str(amount)),
         )
     )
-    return stmts, lambda results: int(_rows(results[-1])[0]["value"])
+    return stmts, lambda results: int(float(_rows(results[-1])[0]["value"]))
 
 
 def _cmd_hset(key: str, field: str | None, value: Any, mapping: dict[str, Any] | None, purge: bool = True) -> Command:

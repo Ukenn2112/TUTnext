@@ -42,10 +42,34 @@ async def ensure_caller(username: str, encrypted_password: str) -> None:
         pass
 
 
+def _pbkdf2_sha256(password: bytes, salt: bytes, iterations: int) -> bytes:
+    """PBKDF2-HMAC-SHA256, one 32-byte block. Pyodide's hashlib has no pbkdf2_hmac."""
+    if hasattr(hashlib, "pbkdf2_hmac"):
+        return hashlib.pbkdf2_hmac("sha256", password, salt, iterations)
+    block = 64
+    key = hashlib.sha256(password).digest() if len(password) > block else password
+    key = key.ljust(block, b"\0")
+    inner = hashlib.sha256(bytes(b ^ 0x36 for b in key))
+    outer = hashlib.sha256(bytes(b ^ 0x5C for b in key))
+
+    def prf(msg: bytes) -> bytes:
+        i, o = inner.copy(), outer.copy()
+        i.update(msg)
+        o.update(i.digest())
+        return o.digest()
+
+    u = prf(salt + b"\x00\x00\x00\x01")
+    acc = int.from_bytes(u, "big")
+    for _ in range(iterations - 1):
+        u = prf(u)
+        acc ^= int.from_bytes(u, "big")
+    return acc.to_bytes(32, "big")
+
+
 def credential_digest(username: str, password: str) -> str:
     """Tag binding a cache entry to the credential that produced it (slow hash: the
     plaintext school password must not be cheaply recoverable from a D1 dump)."""
-    return hashlib.pbkdf2_hmac("sha256", password.encode(), b"tutnext-cache:" + username.encode(), 2000).hex()
+    return _pbkdf2_sha256(password.encode(), b"tutnext-cache:" + username.encode(), 2000).hex()
 
 
 def digest_matches(expected: str, username: str, password: str) -> bool:
