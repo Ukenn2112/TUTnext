@@ -254,3 +254,23 @@ tutnext-bus   ◀── gateway /bus/*（PDF 解析只在这里，按需懒加�
 * 所有 Worker `workers_dev: false`、`preview_urls: false`；唯一入口是 `tama.qaq.tw`（gateway）。Service binding / Queue 不依赖 workers.dev。
 * gateway 只转发 iOS app 实际调用的 14 个 `方法 路径`（`gateway/src/index.ts` 的 `ROUTES`，来源：TUTnextApp 里 `AppConstants.backendBaseURL` 的调用 + 日历订阅 `GET /schedule`），其余一律由 gateway 直接 404，不唤醒 Python。被挡掉的包括扫描器（`.env`、`.git`、`phpinfo`…，此前占 tama.qaq.tw 请求的一半以上）、FastAPI 的 `/docs` `/openapi.json`、app 从未使用过的 `/login_check`，以及运维探针 `/admin/apns-probe`。
 * app 新增接口时：先在 FastAPI 加路由，再把 `"方法 路径"` 加进 `ROUTES` 并部署 gateway。
+
+## 9. 安全加固（2026-10-04）
+
+审查发现并已修复：
+
+| 问题 | 修复 |
+|---|---|
+| `/kadai`、`GET /schedule` 命中缓存时不校验密码，凭学籍番号即可读他人课题/课表 | `/kadai` 缓存只返回给与 D1 存储凭据一致的请求；iCal 缓存值带凭据摘要（pbkdf2），密码不符视为未命中 |
+| session 缓存不比对密码：5 分钟内用错误密码可复用他人已登录 session | `_UserSession.password` 绑定建立 session 的凭据，不一致就重新登录 |
+| `/push/send` 任何人可覆盖他人登记（推送改到自己设备，或写入错误密码让监测删除用户） | `api/auth.py` `reject_unless_caller`：与已存凭据一致即可，否则先用 T-NEXT 登录验证；失败 403，学校不可达 503 |
+| `/live-activity/register`、`/push-to-start` 可把他人的 LA 绑到自己设备 | 同上，先验证再存 token |
+| 无速率限制，可借本服务暴力破解/锁定学生账号 | gateway 对 10 个会登录 T-NEXT 的路由按学籍番号精确计数（D1 `rate_counters`，12 次/分，大小写/空格归一）；重复 `username` 参数直接 400；区域 WAF 规则：tama.qaq.tw 每 IP 每 10 秒 100 次，超出封 10 秒 |
+| 请求体无上限 | gateway 16 KB 上限（含 chunked），超出 413 |
+| 错误响应暴露内部信息 | 非学校返回的异常统一返回通用文案，细节只进日志；pydantic 字段加 `max_length` |
+| 缺少安全响应头 | API：`Cache-Control: no-store`、`nosniff`、HSTS（并去掉内部标记头）；静态页：`_headers`（HSTS、nosniff、`X-Frame-Options: DENY`、`Referrer-Policy`） |
+
+* Workers Rate Limiting binding 实测在本账号上从不拦截（limit 5 也一直 success），因此没有使用。
+* **仍需 app 配合**：`/oauth/tokens|revoke|status` 现在接受可选的 `encryptedPassword` 并在提供时验证；当前 app 只发 `username`（`GoogleOAuthService.swift`），所以仍可凭学籍番号查询/撤销 Google 绑定。app 发版带上该字段后，把它改为必填。
+* **需要用户操作**：在 Cloudflare 后台吊销服务器用的 API token `tutnext-server-d1`（D1 读写，服务器已停用）；修改服务器 SSH 密码并改用密钥登录；建议把 `qaq.tw` 区域的最低 TLS 版本提到 1.2、SSL 模式改为 Full (strict)（影响整个区域的其他子域，需确认）。
+* **后续可做**：D1 `users.encryptedpassword`（可直接用于登录）和 `user_tokens.refresh_token` 目前明文存储，可用 Worker secret 做应用层 AES-GCM 加密。

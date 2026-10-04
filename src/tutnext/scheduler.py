@@ -80,10 +80,18 @@ async def every_minute() -> None:
     except Exception as e:  # noqa: BLE001
         logger.error("LA dispatcher error: %s", e)
     await _safe("la_pending_retry", retry_pending_schedules())
+    await _safe("rate_counter_gc", _purge_rate_counters())
     purge = getattr(redis, "purge_expired", None)
     if purge is not None:
         await _safe("purge_expired", purge())
     logger.info("every_minute done in %.1fs", time.monotonic() - started)
+
+
+async def _purge_rate_counters() -> None:
+    """Drop tutnext-gateway's per-student counters older than an hour (rate_counters table)."""
+    from tutnext.core.d1client import BindingExecutor
+
+    await BindingExecutor("DB").batch([("DELETE FROM rate_counters WHERE window < ?", (int(time.time() // 60) - 60,))])
 
 
 async def monitor() -> None:

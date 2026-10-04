@@ -16,6 +16,10 @@
   // /policy → policy.html); everything else falls through to the Worker.
   "assets": { "directory": "../src/tutnext/static", "binding": "ASSETS" },
 
+  // Exact per-student login counters (rate_counters, migrations/0003); per-IP flooding is
+  // handled by the zone WAF rate-limiting rule on tama.qaq.tw.
+  "d1_databases": [{ "binding": "DB", "database_name": "tutnext", "database_id": "7014de82-cb2c-4c90-853d-af0087fa0e50" }],
+
   "services": [
     { "binding": "API", "service": "tutnext" },
     { "binding": "BUS", "service": "tutnext-bus" }

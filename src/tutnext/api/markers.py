@@ -21,4 +21,4 @@ def install_gateway_markers(app: FastAPI) -> None:
     async def unhandled_error(request: Request, exc: Exception):
         # Built by Starlette's outermost ServerErrorMiddleware, outside mark_app_response.
         # No logging here: ServerErrorMiddleware re-raises and the ASGI adapter logs it.
-        return JSONResponse({"status": False, "message": str(exc)}, status_code=500, headers={MARKER: "1"})
+        return JSONResponse({"status": False, "message": "Internal Server Error"}, status_code=500, headers={MARKER: "1"})

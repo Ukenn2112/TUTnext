@@ -4,26 +4,28 @@ import logging
 from fastapi import APIRouter, Response, status
 from pydantic import BaseModel, Field
 
+from tutnext.api.auth import reject_unless_caller
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 class LiveActivityRegistration(BaseModel):
-    username: str = Field(min_length=1)
-    encryptedPassword: str = Field(min_length=1)
-    liveActivityToken: str = Field(min_length=1)
-    activityId: str = Field(min_length=1)
+    username: str = Field(min_length=1, max_length=64)
+    encryptedPassword: str = Field(min_length=1, max_length=1024)
+    liveActivityToken: str = Field(min_length=1, max_length=512)
+    activityId: str = Field(min_length=1, max_length=128)
 
 
 class LiveActivityUnregistration(BaseModel):
-    username: str = Field(min_length=1)
-    activityId: str = Field(min_length=1)
+    username: str = Field(min_length=1, max_length=64)
+    activityId: str = Field(min_length=1, max_length=128)
 
 
 class PushToStartRegistration(BaseModel):
-    username: str = Field(min_length=1)
-    encryptedPassword: str = Field(min_length=1)
-    pushToStartToken: str = Field(min_length=1)
+    username: str = Field(min_length=1, max_length=64)
+    encryptedPassword: str = Field(min_length=1, max_length=1024)
+    pushToStartToken: str = Field(min_length=1, max_length=512)
 
 
 @router.post("/register")
@@ -31,7 +33,10 @@ async def register_live_activity(data: LiveActivityRegistration, response: Respo
     """Register a Live Activity push token and schedule transition pushes.
 
     The token is stored *first*: if T-NEXT is unreachable the registration still
-    succeeds and the scheduling is retried in the background.
+    succeeds and the scheduling is retried in the background.  That shortcut is only
+    taken for callers whose credential matches the one stored in D1; anyone else must
+    pass a T-NEXT login first, or they could attach their own device to a victim's
+    activity (the pushes carry the victim's timetable).
     """
     from tutnext.services.push.live_activity import (
         enqueue_pending_schedule,
@@ -40,12 +45,14 @@ async def register_live_activity(data: LiveActivityRegistration, response: Respo
     )
 
     logger.info("LA register: user=%s, activity=%s", data.username, data.activityId)
+    if (rejected := await reject_unless_caller(response, data.username, data.encryptedPassword)) is not None:
+        return rejected
     try:
         await store_la_token(data.username, data.liveActivityToken, data.activityId)
     except Exception as e:
         logger.error("LA register token store error for %s: %s", data.username, e)
         response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        return {"status": False, "message": str(e)}
+        return {"status": False, "message": "サーバーエラーが発生しました。しばらくしてから再度お試しください。"}
 
     try:
         count = await schedule_live_activity_pushes(
@@ -76,6 +83,10 @@ async def register_push_to_start(data: PushToStartRegistration, response: Respon
     from tutnext.core.database import db_manager
     from tutnext.services.push.live_activity import store_push_to_start_token
 
+    # Verify first: otherwise anyone could point a victim's next-day activity (started with
+    # the victim's stored credential) at their own device.
+    if (rejected := await reject_unless_caller(response, data.username, data.encryptedPassword)) is not None:
+        return rejected
     try:
         logger.info("LA push-to-start register: user=%s", data.username)
         # Prefer the credentials already stored for push-registered users; only
@@ -93,7 +104,7 @@ async def register_push_to_start(data: PushToStartRegistration, response: Respon
     except Exception as e:
         logger.error("LA push-to-start error for %s: %s", data.username, e)
         response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        return {"status": False, "message": str(e)}
+        return {"status": False, "message": "サーバーエラーが発生しました。しばらくしてから再度お試しください。"}
 
 
 @router.post("/unregister")
@@ -116,4 +127,4 @@ async def unregister_live_activity(data: LiveActivityUnregistration, response: R
     except Exception as e:
         logger.error("LA unregister error for %s: %s", data.username, e)
         response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        return {"status": False, "message": str(e)}
+        return {"status": False, "message": "サーバーエラーが発生しました。しばらくしてから再度お試しください。"}

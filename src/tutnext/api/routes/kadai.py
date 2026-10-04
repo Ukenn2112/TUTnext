@@ -1,32 +1,35 @@
 # tutnext/api/routes/kadai.py
+import asyncio
 import json
 import logging
 import traceback
-import asyncio
-from typing import List, Dict, Any
-from fastapi import APIRouter, Response, status
-from pydantic import BaseModel
-from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
+from typing import Any, Dict, List
 
-from tutnext.config import redis, HTTP_PROXY
+from fastapi import APIRouter, Response, status
+from pydantic import BaseModel, Field
+
+from tutnext.api.auth import stored_password_matches
+from tutnext.config import HTTP_PROXY, redis
 from tutnext.core.database import db_manager
-from tutnext.services.google_classroom import classroom_api
+from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.services.gakuen.session_manager import get_session_manager
+from tutnext.services.google_classroom import classroom_api
 
 router = APIRouter()
 
 
 class KadaiRequest(BaseModel):
-    username: str
-    encryptedPassword: str
+    username: str = Field(min_length=1, max_length=64)
+    encryptedPassword: str = Field(min_length=1, max_length=1024)
 
 
 @router.post("")
 async def get_kadai(data: KadaiRequest, response: Response):
     username = data.username
     encryptedPassword = data.encryptedPassword
-    # 如果缓存中存在数据，则直接返回
-    if await redis.exists(f"{username}:kadai"):
+    # 缓存只返回给持有该学生凭据的调用方（与 D1 中保存的 encryptedPassword 一致）；
+    # 否则走下面的实时登录，由 T-NEXT 判定凭据。
+    if await redis.exists(f"{username}:kadai") and await stored_password_matches(username, encryptedPassword):
         redis_kadai_list = await redis.get(f"{username}:kadai")
         kadai_list = json.loads(redis_kadai_list)
         response.status_code = status.HTTP_200_OK
@@ -80,4 +83,4 @@ async def get_kadai(data: KadaiRequest, response: Response):
             logging.error(f"[{username}] error: {e}")
             logging.error(f"Traceback: {traceback.format_exc()}")
             response.status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-            return {"status": False, "message": str(e)}
+            return {"status": False, "message": "サーバーエラーが発生しました。しばらくしてから再度お試しください。"}

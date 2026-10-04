@@ -18,6 +18,7 @@ Per-User Session 管理器
 """
 
 import asyncio
+import hmac
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -43,6 +44,9 @@ LEASE_TTL_SECONDS = 120.0
 class _UserSession:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     gakuen: GakuenAPI | None = None
+    # The credential the cached session was opened with; a request is only handed the
+    # cached session when it presents the same one (otherwise it logs in itself).
+    password: str = ""
     last_used: float = 0.0
     held_since: float = 0.0
 
@@ -119,10 +123,9 @@ class SessionManager:
             if (
                 us.gakuen is not None
                 and (now - us.last_used) < SESSION_TTL
+                and hmac.compare_digest(us.password.encode(), encrypted_password.encode())
             ):
-                # 复用缓存的 session
-                us.gakuen.user_id = username
-                us.gakuen.encrypted_login_password = encrypted_password
+                # 复用缓存的 session（仅当凭据与建立该 session 时相同）
                 us.last_used = now
                 logger.debug(f"[SessionManager] 复用缓存 session: {username}")
                 try:
@@ -144,6 +147,7 @@ class SessionManager:
             try:
                 await gakuen._mobile_login()
                 us.gakuen = gakuen
+                us.password = encrypted_password
                 us.last_used = time.monotonic()
                 logger.debug(f"[SessionManager] 新建 session: {username}")
                 yield gakuen
@@ -171,6 +175,7 @@ class SessionManager:
             except Exception:
                 pass
             us.gakuen = None
+        us.password = ""
 
     async def cleanup(self, max_idle_seconds: float = SESSION_TTL) -> None:
         """清理超时的 session，释放连接和内存。"""

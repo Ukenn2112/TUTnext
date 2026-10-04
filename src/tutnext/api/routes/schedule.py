@@ -8,8 +8,9 @@ from fastapi import APIRouter, HTTPException, Response, status as http_status
 from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from tutnext.api.auth import credential_digest, digest_matches
 from tutnext.services.gakuen.client import GakuenAPI, GakuenAPIError
 from tutnext.config import HTTP_PROXY, redis
 from tutnext.services.gakuen.session_manager import get_session_manager
@@ -18,9 +19,9 @@ router = APIRouter()
 
 
 class LaterScheduleRequest(BaseModel):
-    username: str
-    encryptedPassword: str
-    targetDate: Optional[str] = None  # YYYY-MM-DD 格式，省略时默认为明天
+    username: str = Field(min_length=1, max_length=64)
+    encryptedPassword: str = Field(min_length=1, max_length=1024)
+    targetDate: Optional[str] = Field(default=None, max_length=10)  # YYYY-MM-DD 格式，省略时默认为明天
 
 
 class ClassBulletinData(BaseModel):
@@ -29,8 +30,8 @@ class ClassBulletinData(BaseModel):
 
 
 class ClassBulletinRequest(BaseModel):
-    loginUserId: str
-    encryptedLoginPassword: str
+    loginUserId: str = Field(min_length=1, max_length=64)
+    encryptedLoginPassword: str = Field(min_length=1, max_length=1024)
     plainLoginPassword: Optional[str] = None
     productCd: Optional[str] = None
     subProductCd: Optional[str] = None
@@ -47,11 +48,15 @@ async def send_schedule(username=None, password=None):
 
     # 缓存策略：优先从 Redis 读取已生成的 iCal 内容，命中时直接返回，
     # 避免每次请求都重复登录大学系统并拉取两个月的课程数据（TTL 300秒）
+    # 缓存值为 "<凭据摘要>\n<iCal>"：只有提交相同密码的请求才能命中（防止仅凭学籍番号读取他人课表）。
     cache_key = f"schedule:ical:{username}"
     cached = await redis.get(cache_key)
     if cached:
-        logging.info(f"cache hit: 学籍番号: {username}")
-        return Response(content=cached, media_type="text/calendar")
+        text = cached.decode("utf-8") if isinstance(cached, bytes) else str(cached)
+        tag, _, ical = text.partition("\n")
+        if ical and digest_matches(tag, username, password):
+            logging.info(f"cache hit: 学籍番号: {username}")
+            return Response(content=ical, media_type="text/calendar")
 
     async with get_session_manager().lock_only(username):
         gakuen = GakuenAPI(username, password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
@@ -110,7 +115,7 @@ async def send_schedule(username=None, password=None):
                 event.add_component(alarm)
                 cal.add_component(event)
             ical_content = cal.to_ical()
-            await redis.set(cache_key, ical_content, ex=300)
+            await redis.set(cache_key, credential_digest(username, password) + "\n" + ical_content.decode("utf-8"), ex=300)
             return Response(content=ical_content, media_type="text/calendar")
         except GakuenAPIError as e:
             logging.warning(f"[{username}] error: {e}")
@@ -118,7 +123,7 @@ async def send_schedule(username=None, password=None):
         except Exception as e:
             logging.error(f"[{username}] error: {e}")
             logging.error(f"Traceback: {traceback.format_exc()}")
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail="サーバーエラーが発生しました。しばらくしてから再度お試しください。")
         finally:
             await gakuen.close()
 
@@ -211,7 +216,7 @@ async def get_later_schedule(data: LaterScheduleRequest, response: Response):
             logging.error(f"[{username}] get_later_schedule error: {e}")
             logging.error(f"Traceback: {traceback.format_exc()}")
             response.status_code = http_status.HTTP_500_INTERNAL_SERVER_ERROR
-            return {"status": False, "message": str(e)}
+            return {"status": False, "message": "サーバーエラーが発生しました。しばらくしてから再度お試しください。"}
 
 
 @router.post("/class_bulletin")
