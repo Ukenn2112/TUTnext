@@ -40,8 +40,8 @@
     "APNS_TOPIC": "com.meikenn.tama",
     "APNS_USE_SANDBOX": "false",
     "CLIENT_ID": "87800423252-m54i673pp45dohr68d50jb2l6j2vigbf.apps.googleusercontent.com",
-    "ENABLE_MONITOR_PUSH": "false",
-    "ENABLE_DAILY_PUSH": "false",
+    "ENABLE_MONITOR_PUSH": "true",
+    "ENABLE_DAILY_PUSH": "true",
     "MONITOR_INTERVAL_SECONDS": "240",
     "MONITOR_MAX_CONCURRENT": "3"
   }
