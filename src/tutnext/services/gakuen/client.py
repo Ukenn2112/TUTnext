@@ -56,6 +56,21 @@ _ROOM_CACHE_TTL = 604800  # 1 week
 logger = logging.getLogger(__name__)
 
 
+
+def _log_interstitial_shape(soup: BeautifulSoup, user_id: str) -> None:
+    """Log the structure (form/button ids, button labels) of the 重要アンケート interstitial,
+    without ViewState, tokens or page text, to find how a browser leaves it."""
+    try:
+        forms = [f.get("id") for f in soup.find_all("form")]
+        buttons = [
+            (b.get("id") or b.get("name"), (b.get("value") or b.get_text(strip=True))[:20])
+            for b in soup.find_all(["button", "input", "a"])
+            if (b.name != "input" or b.get("type") in ("submit", "button")) and (b.get("id") or b.get("name"))
+        ][:30]
+        logger.info("[%s] 重要アンケート page shape: forms=%s buttons=%s", user_id, forms, buttons)
+    except Exception:  # noqa: BLE001 — diagnostics only
+        pass
+
 class GakuenAPI:
     """学園システムAPIクライアント"""
 
@@ -171,6 +186,7 @@ class GakuenAPI:
                 )
             self._state.update_from_soup(soup)
             if soup.find("dt", class_="msgArea"):  # 重要アンケートがある場合
+                _log_interstitial_shape(soup, self.user_id)
                 soup = await self._to_home_page()
                 self._state.update_from_soup(soup)
             self._ids.extract_desktop_ids(soup)
@@ -1242,10 +1258,21 @@ class GakuenAPI:
                 )
             return soup
         except Exception as e:
-            raise GakuenAPIError(
-                f"ホームページ移動中に予想外エラーが発生しました: {str(e)}",
-                error_code="HOME_PAGE_NAVIGATION_ERROR",
-            )
+            first_error = e
+        # The logo-click POST from the 重要アンケート page answers HTTP 500 for some students
+        # (10 fixed accounts, 2026-10-04). A plain GET of the home page with the logged-in
+        # session is how a browser gets there by URL; try it before giving up.
+        try:
+            soup = await self._http.fetch(home_url, method="GET")
+            if isinstance(soup, BeautifulSoup) and soup.find(id="headerForm"):
+                logger.info("[%s] ホームページ: logo POST failed (%s), GET fallback succeeded", self.user_id, first_error)
+                return soup
+        except Exception as e:  # noqa: BLE001
+            logger.info("[%s] ホームページ GET fallback failed: %s", self.user_id, e)
+        raise GakuenAPIError(
+            f"ホームページ移動中に予想外エラーが発生しました: {str(first_error)}",
+            error_code="HOME_PAGE_NAVIGATION_ERROR",
+        )
 
     async def _to_mobile_home_page(self) -> BeautifulSoup:
         """モバイルホームページに移動"""

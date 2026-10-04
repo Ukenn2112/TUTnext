@@ -17,6 +17,11 @@ from tutnext.services.gakuen.session_manager import get_session_manager
 
 router = APIRouter()
 
+_SURVEY_PENDING_MESSAGE = (
+    "T-NEXT に未回答の重要アンケートがあるため時間割を取得できません。"
+    "ブラウザで T-NEXT にログインし、アンケートに回答してください。"
+)
+
 
 class LaterScheduleRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
@@ -57,6 +62,15 @@ async def send_schedule(username=None, password=None):
         if ical and digest_matches(tag, username, password):
             logging.info(f"cache hit: 学籍番号: {username}")
             return Response(content=ical, media_type="text/calendar")
+
+    # 重要アンケート未回答で T-NEXT のホーム遷移が失敗した直後は、カレンダー購読の再試行ごとに
+    # 学校へログインし直さない（同じ資格情報のみ、10 分間）。
+    fail_key = f"schedule:ical:fail:{username}"
+    failed = await redis.get(fail_key)
+    if failed:
+        failed_text = failed.decode("utf-8") if isinstance(failed, bytes) else str(failed)
+        if digest_matches(failed_text, username, password):
+            raise HTTPException(status_code=503, detail=_SURVEY_PENDING_MESSAGE)
 
     async with get_session_manager().lock_only(username):
         gakuen = GakuenAPI(username, password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
@@ -119,6 +133,9 @@ async def send_schedule(username=None, password=None):
             return Response(content=ical_content, media_type="text/calendar")
         except GakuenAPIError as e:
             logging.warning(f"[{username}] error: {e}")
+            if getattr(e, "error_code", None) == "HOME_PAGE_NAVIGATION_ERROR":
+                await redis.set(fail_key, credential_digest(username, password), ex=600)
+                raise HTTPException(status_code=503, detail=_SURVEY_PENDING_MESSAGE)
             raise HTTPException(status_code=500, detail=str(e))
         except Exception as e:
             logging.error(f"[{username}] error: {e}")
