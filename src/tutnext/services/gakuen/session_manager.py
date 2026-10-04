@@ -3,8 +3,9 @@ Per-User Session 管理器
 =======================
 提供两层优化，解决 T-NEXT 并发登录冲突问题：
 
-1. **Per-user asyncio.Lock** — 同一用户同一时刻只允许一个 T-NEXT 操作，
-   不同用户完全并行，互不阻塞。
+1. **Per-user asyncio.Lock + D1 租约** — 同一用户同一时刻只允许一个 T-NEXT 操作，
+   不同用户完全并行，互不阻塞。asyncio.Lock 只管同一 isolate；D1 租约
+   （``tutnext.core.d1lease``，键 ``gakuen:<username>``）覆盖 API 与 cron Worker 的不同 isolate（服务器不参与）。
 2. **Session 缓存** — 登录后缓存 GakuenAPI 实例（含 aiohttp cookies + rx_tokens），
    后续请求复用已登录的 session，跳过 ~1.2s 的 _mobile_login()。
 
@@ -34,6 +35,8 @@ SESSION_TTL = 300  # 缓存 session 最多 5 分钟
 LOCK_WAIT_SECONDS = 20.0
 # 锁被持有超过这个时间视为遗留锁（持有者已被运行时直接终止，例如 CPU 超限），重建后继续。
 STALE_LOCK_SECONDS = 150.0
+# D1 租约的有效期：持有者被运行时直接终止时，最多这么久后其他进程可以接手。
+LEASE_TTL_SECONDS = 120.0
 
 
 @dataclass
@@ -46,9 +49,11 @@ class _UserSession:
 
 @asynccontextmanager
 async def _locked(us: _UserSession, username: str):
-    """``async with us.lock`` 加等待上限与遗留锁检测。"""
+    """``async with us.lock`` 加等待上限、遗留锁检测，以及跨进程的 D1 租约。"""
+    from tutnext.core.d1lease import LeaseBusy, get_lease
     from tutnext.services.gakuen.errors import GakuenAPIError
 
+    started = time.monotonic()
     try:
         await asyncio.wait_for(us.lock.acquire(), LOCK_WAIT_SECONDS)
     except TimeoutError:
@@ -65,7 +70,15 @@ async def _locked(us: _UserSession, username: str):
             ) from None
     us.held_since = time.monotonic()
     try:
-        yield
+        remaining = max(LOCK_WAIT_SECONDS - (time.monotonic() - started), 1.0)
+        try:
+            async with get_lease().hold(f"gakuen:{username}", ttl=LEASE_TTL_SECONDS, wait=remaining):
+                yield
+        except LeaseBusy:  # only raised while acquiring: another process holds this user
+            raise GakuenAPIError(
+                "他端末で同時に実行中の処理があります。しばらくしてから再試行してください。",
+                error_code="SESSION_BUSY",
+            ) from None
     finally:
         us.held_since = 0.0
         if us.lock.locked():
