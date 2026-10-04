@@ -141,11 +141,11 @@ class MonitorService:
         course_names.discard("")
         await self._update_course_index(username, course_names)
 
-    async def _trigger_classmate_checks(self, trigger_username: str):
-        """通过反向索引找到同课程的同学，立即触发检查（Layer 5 核心）。"""
+    async def find_classmates_to_check(self, trigger_username: str) -> list[str]:
+        """同课程、且本轮尚未检查过的同学（Layer 5；Workers 版由队列消费者入队）。"""
         courses = await redis.smembers(f"{self.USER_COURSES_PREFIX}{trigger_username}")
         if not courses:
-            return
+            return []
 
         # 收集所有同课程用户（去重 + 排除触发者自身）
         classmate_set: set[str] = set()
@@ -156,15 +156,16 @@ class MonitorService:
                 classmate_set.add(m if isinstance(m, str) else m.decode())
         classmate_set.discard(trigger_username)
 
-        if not classmate_set:
-            return
-
         # 过滤：跳过刚检查过的用户（避免同一轮重复检查）
         to_check: list[str] = []
         for uname in classmate_set:
             if not await redis.exists(f"monitor:last_check:{uname}"):
                 to_check.append(uname)
+        return to_check
 
+    async def _trigger_classmate_checks(self, trigger_username: str):
+        """通过反向索引找到同课程的同学，立即触发检查（Layer 5 核心）。"""
+        to_check = await self.find_classmates_to_check(trigger_username)
         if not to_check:
             return
 

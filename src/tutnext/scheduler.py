@@ -10,8 +10,8 @@ when (UTC)                            job
 ====================================  ===============================================
 every minute                          push pools, Live Activity dispatcher (one pass),
                                       pending retries, TTL purge
-minute % 5 == 0 (not 3:00–6:10 JST)   assignment monitor (only if ENABLE_MONITOR_PUSH)
-11:30                                 next-day schedule push (only if ENABLE_DAILY_PUSH)
+minute % 5 == 0 (not 3:00–6:10 JST)   enqueue assignment monitor (only if ENABLE_MONITOR_PUSH)
+11:30                                 enqueue next-day push (only if ENABLE_DAILY_PUSH)
 Sunday 18:00 (Monday 03:00 JST)       bus timetable update
 ====================================  ===============================================
 
@@ -94,24 +94,19 @@ async def monitor() -> None:
     if _in_silent_window(now):
         logger.info("静默时段 (3:00-6:10 JST)，跳过监测")
         return
-    from tutnext.services.push.pool import PushPoolManager
-    from tutnext.services.push.sender import monitor_task_push
+    # Workers: dispatch one queue message per user; the tutnext-monitor Worker does the checks.
+    from tutnext.services.push.monitor_queue import dispatch_monitor_cycle
 
-    logger.info("开始执行监测任务...")
-    await monitor_task_push(PushPoolManager())
-    logger.info("监测任务完成")
+    await dispatch_monitor_cycle()
 
 
 async def daily_push() -> None:
     if not settings.enable_daily_push:
         logger.info("每日晚间推送已禁用 (ENABLE_DAILY_PUSH=false)")
         return
-    from tutnext.services.push.pool import PushPoolManager
-    from tutnext.services.push.sender import send_9pm_push_pool
+    from tutnext.services.push.monitor_queue import dispatch_daily_push
 
-    logger.info("开始执行推送任务...")
-    await send_9pm_push_pool(PushPoolManager())
-    logger.info("推送任务完成")
+    await dispatch_daily_push()
 
 
 async def bus_update() -> None:
