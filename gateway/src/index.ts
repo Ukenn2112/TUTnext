@@ -19,8 +19,29 @@ export interface Env {
   ASSETS: Fetcher;
 }
 
-function upstreamFor(env: Env, path: string): Fetcher {
-  return path === "/bus" || path.startsWith("/bus/") ? env.BUS : env.API;
+// Every route the iOS app calls (TUTnextApp: grep AppConstants.backendBaseURL). Anything else,
+// e.g. the constant .env/.git/phpinfo scans, is answered here and never wakes a Python isolate.
+// Static pages (/, /policy, /user-agreement) are served by Assets before this Worker runs.
+const ROUTES: Record<string, "API" | "BUS"> = {
+  "GET /schedule": "API",
+  "POST /schedule/later": "API",
+  "POST /schedule/class_bulletin": "API",
+  "POST /kadai": "API",
+  "GET /tmail": "API",
+  "POST /push/send": "API",
+  "POST /push/unregister": "API",
+  "POST /oauth/tokens": "API",
+  "POST /oauth/revoke": "API",
+  "POST /oauth/status": "API",
+  "POST /live-activity/register": "API",
+  "POST /live-activity/unregister": "API",
+  "POST /live-activity/push-to-start": "API",
+  "GET /bus/app_data": "BUS",
+};
+
+function upstreamFor(env: Env, method: string, path: string): Fetcher | null {
+  const target = ROUTES[`${method === "HEAD" ? "GET" : method} ${path}`];
+  return target ? env[target] : null;
 }
 
 // Upstream budget per attempt. School-system scraping normally finishes in < 15 s.
@@ -53,10 +74,12 @@ async function callUpstream(upstreamWorker: Fetcher, request: Request, body: Arr
 
 export default {
   async fetch(request, env): Promise<Response> {
+    const path = new URL(request.url).pathname;
+    const upstreamWorker = upstreamFor(env, request.method, path);
+    if (!upstreamWorker) return jsonError(404, "Not Found");
+
     // Bodies are small JSON payloads; buffer them so a retry can resend the same bytes.
     const body = request.method === "GET" || request.method === "HEAD" ? null : await request.arrayBuffer();
-    const path = new URL(request.url).pathname;
-    const upstreamWorker = upstreamFor(env, path);
 
     let result = await callUpstream(upstreamWorker, request, body, 1);
     const fastFailure =

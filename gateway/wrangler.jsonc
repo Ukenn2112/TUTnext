@@ -8,7 +8,8 @@
   "name": "tutnext-gateway",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-02",
-  "workers_dev": true,
+  "workers_dev": false,
+  "preview_urls": false,
   "observability": { "enabled": true },
 
   // /, /policy, /user-agreement come straight from Assets (html_handling maps

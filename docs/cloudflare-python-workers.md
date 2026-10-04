@@ -248,3 +248,9 @@ tutnext-bus   ◀── gateway /bus/*（PDF 解析只在这里，按需懒加�
   2. `wrangler.cron.jsonc` 的 `ENABLE_MONITOR_PUSH` / `ENABLE_DAILY_PUSH` 改为 `"true"`，`uv run pywrangler deploy -c wrangler.cron.jsonc`；
   3. 首轮：D1 里没有服务器本地 Redis 的 `kadai_count:*` / `monitor:*`，每个有课题的用户会收到一次静默的 `kaidaiNumChange`（只更新数字），不会触发 Layer 5；
   4. 稳定后关闭 proxy-vm（Workers 出口不受学校防火墙限制，不需要代理）。
+
+## 8. 收紧入口（2026-10-04）
+
+* 所有 Worker `workers_dev: false`、`preview_urls: false`；唯一入口是 `tama.qaq.tw`（gateway）。Service binding / Queue 不依赖 workers.dev。
+* gateway 只转发 iOS app 实际调用的 14 个 `方法 路径`（`gateway/src/index.ts` 的 `ROUTES`，来源：TUTnextApp 里 `AppConstants.backendBaseURL` 的调用 + 日历订阅 `GET /schedule`），其余一律由 gateway 直接 404，不唤醒 Python。被挡掉的包括扫描器（`.env`、`.git`、`phpinfo`…，此前占 tama.qaq.tw 请求的一半以上）、FastAPI 的 `/docs` `/openapi.json`、app 从未使用过的 `/login_check`，以及运维探针 `/admin/apns-probe`。
+* app 新增接口时：先在 FastAPI 加路由，再把 `"方法 路径"` 加进 `ROUTES` 并部署 gateway。
