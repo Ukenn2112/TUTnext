@@ -17,6 +17,21 @@ from tutnext.core import http as core_http
 from tutnext.core.database import db_manager
 
 _GOOGLE_API_CONCURRENCY = 10
+# A course whose courseWork the user may not read (403 PERMISSION_DENIED without a scope
+# reason — e.g. a course in a Workspace domain that blocks third-party apps, or restricted
+# membership). Re-authorising cannot fix it, so it is skipped for a day instead.
+_DENIED_COURSES_KEY = "gc:denied:{username}"
+_DENIED_COURSES_TTL = 86400
+# 403 reasons that mean the *grant* is insufficient: the user has to authorise again.
+_REAUTH_403_MARKERS = ("ACCESS_TOKEN_SCOPE_INSUFFICIENT", "insufficientPermissions", "SCOPE_INSUFFICIENT")
+
+
+class ReauthRequired(Exception):
+    """The stored Google authorisation no longer works (401, or 403 for missing scopes)."""
+
+
+class CourseAccessDenied(Exception):
+    """403 for one resource while the authorisation itself is fine."""
 # HTTP transport: tutnext.core.http keeps one bounded aiohttp session per process
 # in server mode (caps simultaneous sockets) and uses Workers fetch on Cloudflare.
 
@@ -55,9 +70,14 @@ class GoogleClassroomAPI:
         method: str,
         url: str,
         headers: Optional[Dict[str, str]] = None,
+        raise_auth_errors: bool = False,
         **kwargs,
     ) -> Optional[Dict[str, Any]]:
-        """发送HTTP请求的通用方法"""
+        """发送HTTP请求的通用方法。
+
+        raise_auth_errors=True (Classroom API calls): 401 / scope-403 → ReauthRequired,
+        any other 403 → CourseAccessDenied. Otherwise non-200 returns None.
+        """
         try:
             response = await core_http.request(
                 method, url, headers=headers, data=kwargs.get("data"), timeout=30
@@ -65,15 +85,17 @@ class GoogleClassroomAPI:
             if response.status == 200:
                 return response.json() if response.body else {}
             body = response.text()
-            if response.status == 403:
-                # 课程对该用户权限受限（如旁听/受限成员），预期内的非致命情况
-                logging.warning(f"Request denied (403): {method} {url} - {body}")
-            else:
-                logging.error(f"Request failed: {response.status} - {method} {url} - {body}")
-            return None
         except Exception as e:
             logging.error(f"Request error: {e}")
             return None
+        if raise_auth_errors and response.status == 401:
+            raise ReauthRequired(f"401 from {url.split('?')[0]}")
+        if raise_auth_errors and response.status == 403:
+            if any(marker in body for marker in _REAUTH_403_MARKERS):
+                raise ReauthRequired(f"403 (scope) from {url.split('?')[0]}")
+            raise CourseAccessDenied(url.split("?")[0])
+        logging.error(f"Request failed: {response.status} - {method} {url} - {body}")
+        return None
 
     async def _check_token_validity(self, access_token: str, session=None) -> bool:
         """检查访问令牌是否有效（token 过期返回 400 属正常情况，不记录为错误）"""
@@ -147,7 +169,11 @@ class GoogleClassroomAPI:
         headers = {"Authorization": f"Bearer {access_token}"}
         url = f"{self.base_url}/courses?courseStates=ACTIVE&fields=courses(id,name)"
 
-        response = await self._make_request(session, "GET", url, headers=headers)
+        try:
+            response = await self._make_request(session, "GET", url, headers=headers, raise_auth_errors=True)
+        except CourseAccessDenied:
+            logging.warning("Classroom courses list denied (403) — account not allowed to use the API")
+            return []
         if response and "courses" in response:
             return response["courses"]
         return []
@@ -157,10 +183,12 @@ class GoogleClassroomAPI:
         session,
         access_token: str,
         course_ids: List[str],
+        denied: Optional[set] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """批处理获取多个课程的课题"""
+        """批处理获取多个课程的课题（403 拒绝访问的课程 id 收集到 *denied*）"""
         headers = {"Authorization": f"Bearer {access_token}"}
         course_work_map = {}
+        denied = denied if denied is not None else set()
 
         sem = asyncio.Semaphore(_GOOGLE_API_CONCURRENCY)
 
@@ -168,7 +196,11 @@ class GoogleClassroomAPI:
         async def fetch_course_work(course_id: str):
             async with sem:
                 url = f"{self.base_url}/courses/{course_id}/courseWork?fields=courseWork(id,courseId,title,dueDate,dueTime,description,alternateLink)"
-                response = await self._make_request(session, "GET", url, headers=headers)
+                try:
+                    response = await self._make_request(session, "GET", url, headers=headers, raise_auth_errors=True)
+                except CourseAccessDenied:
+                    denied.add(course_id)
+                    response = None
                 if response and "courseWork" in response:
                     course_work_map[course_id] = response["courseWork"]
                 else:
@@ -199,7 +231,10 @@ class GoogleClassroomAPI:
                     f"?states=NEW&states=CREATED&states=RECLAIMED_BY_STUDENT"
                     f"&fields=studentSubmissions(courseWorkId,courseId,state)"
                 )
-                response = await self._make_request(session, "GET", url, headers=headers)
+                try:
+                    response = await self._make_request(session, "GET", url, headers=headers, raise_auth_errors=True)
+                except CourseAccessDenied:
+                    response = None
                 if response and "studentSubmissions" in response:
                     for sub in response["studentSubmissions"]:
                         key = f"{course_id}_{sub.get('courseWorkId', '')}"
@@ -363,7 +398,13 @@ class GoogleClassroomAPI:
 
             # 创建课程ID到课程名称的映射
             course_name_map = {course["id"]: course["name"] for course in courses}
-            course_ids = list(course_name_map.keys())
+            # Skip courses that recently answered 403 (re-authorising would not help).
+            denied_key = _DENIED_COURSES_KEY.format(username=username)
+            try:
+                known_denied = {c if isinstance(c, str) else c.decode() for c in await redis.smembers(denied_key)}
+            except Exception:  # noqa: BLE001
+                known_denied = set()
+            course_ids = [cid for cid in course_name_map if cid not in known_denied]
 
             # 缓存 Google Classroom 课程名到反向索引（Layer 5 课程关联传播用）
             gc_course_names = list(course_name_map.values())
@@ -380,10 +421,18 @@ class GoogleClassroomAPI:
                     pass  # Redis 失败不影响主流程
 
             # 2. 并行获取 courseWork 和 submissions（通配符方式无依赖关系）
+            newly_denied: set = set()
             course_work_map, submissions_map = await asyncio.gather(
-                self._get_course_work_batch(session, access_token, course_ids),
+                self._get_course_work_batch(session, access_token, course_ids, newly_denied),
                 self._get_student_submissions_batch(session, access_token, course_ids),
             )
+            if newly_denied:
+                logging.info(f"用户 {username} 的 {len(newly_denied)} 个课程拒绝访问 (403)，24 小时内跳过: {sorted(newly_denied)}")
+                try:
+                    await redis.sadd(denied_key, *newly_denied)
+                    await redis.expire(denied_key, _DENIED_COURSES_TTL)
+                except Exception:  # noqa: BLE001
+                    pass
 
             # 3. 筛选有截止时间的课题，并且去除已经超过截止时间1天以上的课题
             course_work_with_due = []
@@ -449,6 +498,16 @@ class GoogleClassroomAPI:
             logging.info(f"用户 {username} 有 {len(pending_assignments)} 个未完成的课题")
             return pending_assignments
 
+        except ReauthRequired as e:
+            # The grant itself no longer works: drop it (Google + D1) so the app shows the
+            # account as unlinked and the user can authorise again.
+            logging.warning(f"用户 {username} 的 Google 授权已失效（{e}），撤销授权并等待重新授权")
+            try:
+                await self.revoke_user_authorization(username)
+                await redis.delete(f"{username}:kadai")
+            except Exception as revoke_error:  # noqa: BLE001
+                logging.error(f"撤销用户 {username} 的 Google 授权失败: {revoke_error}")
+            return []
         except Exception as e:
             logging.error(f"获取用户 {username} 课题时出错: {e}")
             return []
