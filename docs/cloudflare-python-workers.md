@@ -230,3 +230,21 @@ tutnext-cron (Python, wrangler.cron.jsonc, src/cron_worker.py)   唯一的 * * *
   `PUT /accounts/{acc}/workers/domains  {"hostname":"tama.qaq.tw","service":"tutnext","zone_id":"5687a087c837812507f295050cf22f52","environment":"production","override_existing_origin":true}`
 * **已知遗留**：per-user session 锁是 isolate 内的 `asyncio.Lock`，cron（LA 拉课表）和 API 现在必然在不同 isolate，同一用户可能同时登录 T-NEXT；计划改为 D1 租约锁。
 * **cron 迁移踩坑**：把 cron 从 `tutnext` 挪到 `tutnext-cron` 时，`wrangler deploy` 后 schedules API 显示已更新，但旧 Worker 继续触发 35 分钟、新 Worker 从未触发；对两个 Worker 重新 `PUT /accounts/{acc}/workers/scripts/{name}/schedules` 后约 3 分钟完成交接（23:54 UTC 有一分钟两边都跑了）。
+
+## 7. 第二阶段：监测与 20:30 推送迁到 Queues（2026-10-04）
+
+```
+tutnext-cron  ──(每 5 分钟 / 11:30 UTC，仅在 ENABLE_* = true 时)──▶ Queue tutnext-monitor ──▶ tutnext-monitor (Python 消费者)
+                 每个用户一条消息 {kind, username}（不含密码），delaySeconds 分散到监测间隔内
+tutnext-bus   ◀── gateway /bus/*（PDF 解析只在这里，按需懒加载）
+```
+
+* **对应 MonitorService 五层**：并发 = 消费者 `max_batch_size 3 × max_concurrency 2`；静默时段在 cron 和每条消息各判断一次；退避 = 每条消息先 `should_check_user`；时间分散 = `delaySeconds`；Layer 5 = 变化的用户把同学以 `classmate` 消息入队（只扩散一层，基线检查不扩散）。
+* **防重复**：每个用户检查期间持有 D1 租约 `monitor:<user>`（避免两轮重叠时重复推送）；`daily` 消息用 `daily_done:<user>:<date>` 去重；消息处理完逐条 `ack()`。
+* **跨进程登录锁**：`tutnext.core.d1lease`，表 `locks`（migrations/0002），键 `gakuen:<user>`，TTL 120 s，用 D1 时钟；仅 Workers 参与（服务器走 REST 会触发 API 限流）。
+* **部署**：`uv run pywrangler deploy -c wrangler.monitor.jsonc` / `-c wrangler.bus.jsonc`；`tutnext-monitor` 的 APNs secrets 单独设置（同 tutnext-cron）。
+* **切换步骤**（服务器下线）：
+  1. 服务器停掉 `com.meikenn.tutnext`（`launchctl bootout gui/$(id -u)/com.meikenn.tutnext`，或 `.env` 里把两个 ENABLE 设为 false 后 kickstart）；
+  2. `wrangler.cron.jsonc` 的 `ENABLE_MONITOR_PUSH` / `ENABLE_DAILY_PUSH` 改为 `"true"`，`uv run pywrangler deploy -c wrangler.cron.jsonc`；
+  3. 首轮：D1 里没有服务器本地 Redis 的 `kadai_count:*` / `monitor:*`，每个有课题的用户会收到一次静默的 `kaidaiNumChange`（只更新数字），不会触发 Layer 5；
+  4. 稳定后关闭 proxy-vm（Workers 出口不受学校防火墙限制，不需要代理）。
