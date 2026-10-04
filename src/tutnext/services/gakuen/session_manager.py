@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
 from tutnext.config import HTTP_PROXY
+from tutnext.runtime import IS_WORKERS
 from tutnext.services.gakuen.client import GakuenAPI
 
 logger = logging.getLogger(__name__)
@@ -33,11 +34,11 @@ BASE_URL = "https://next.tama.ac.jp"
 SESSION_TTL = 300  # 缓存 session 最多 5 分钟
 # 等待 per-user lock 的上限。等待太久的请求会被 Cloudflare 运行时判定为"挂起"并取消（实测 25–40 s），
 # 所以超过 LOCK_WAIT_SECONDS 就直接返回可重试的错误，让调用方按「他端末で同時に実行」路径重试。
-LOCK_WAIT_SECONDS = 20.0
+LOCK_WAIT_SECONDS = 12.0 if IS_WORKERS else 20.0  # Workers: /kadai's busy-retry (12+2+12 s) fits the gateway's 40 s
 # 锁被持有超过这个时间视为遗留锁（持有者已被运行时直接终止，例如 CPU 超限），重建后继续。
 STALE_LOCK_SECONDS = 150.0
 # D1 租约的有效期：持有者被运行时直接终止时，最多这么久后其他进程可以接手。
-LEASE_TTL_SECONDS = 120.0
+LEASE_TTL_SECONDS = 45.0
 
 
 @dataclass
@@ -56,6 +57,27 @@ async def _locked(us: _UserSession, username: str):
     """``async with us.lock`` 加等待上限、遗留锁检测，以及跨进程的 D1 租约。"""
     from tutnext.core.d1lease import LeaseBusy, get_lease
     from tutnext.services.gakuen.errors import GakuenAPIError
+
+    if IS_WORKERS:
+        # Workers: never wait on an in-isolate asyncio.Lock. A request blocked on a future that
+        # *another* request resolves is never woken (its wake-up is scheduled in the finished
+        # request's context), so the runtime cancels it as hung after ~20 s and its lease stays
+        # held — the "code had hung" /schedule/later + SESSION_BUSY /kadai chains of 2026-10-04.
+        # The D1 lease serialises same-isolate requests too, by polling with this request's own
+        # timers and D1 I/O.
+        try:
+            async with get_lease().hold(f"gakuen:{username}", ttl=LEASE_TTL_SECONDS, wait=LOCK_WAIT_SECONDS):
+                us.held_since = time.monotonic()
+                try:
+                    yield
+                finally:
+                    us.held_since = 0.0
+        except LeaseBusy:  # only raised while acquiring
+            raise GakuenAPIError(
+                "他端末で同時に実行中の処理があります。しばらくしてから再試行してください。",
+                error_code="SESSION_BUSY",
+            ) from None
+        return
 
     started = time.monotonic()
     try:
