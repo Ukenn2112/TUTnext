@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from tutnext.config import JAPAN_TZ, settings
 
@@ -44,19 +44,44 @@ def _in_silent_window(now: datetime) -> bool:
 
 
 async def _safe(name: str, coro) -> None:
+    started = time.monotonic()
     try:
         await coro
     except Exception as e:  # noqa: BLE001 - one failing job must not stop the others
         logger.error("cron job %s failed: %s", name, e, exc_info=True)
+    elapsed = time.monotonic() - started
+    if elapsed > 2:
+        logger.info("cron job %s took %.1fs", name, elapsed)
 
 
-async def every_minute() -> None:
+async def _once(name: str, window_start: tuple[int, int], now_utc: datetime, minutes: int = 15) -> bool:
+    """True exactly once per UTC day, in the first invocation inside [window_start, +minutes).
+
+    A fixed (hour, minute) match is not enough: invocations start late when the previous
+    one ran long, and the 11:30 run started at 11:31 on 2026-10-05 so the 20:30 push never
+    went out. The D1 lease row (kept until it expires) makes the job run once per day.
+    """
+    start = now_utc.replace(hour=window_start[0], minute=window_start[1], second=0, microsecond=0)
+    if not start <= now_utc < start + timedelta(minutes=minutes):
+        return False
+    import uuid
+
+    from tutnext.core.d1lease import get_lease
+
+    lease = get_lease()
+    if not lease.enabled:
+        return now_utc.minute == window_start[1]
+    return await lease.try_acquire(f"job:{name}:{start.date().isoformat()}", uuid.uuid4().hex, ttl=36 * 3600)
+
+
+async def every_minute(now_utc: datetime | None = None) -> None:
     from tutnext.config import redis
     from tutnext.services.push.live_activity import dispatch_live_activity_pushes, retry_pending_schedules
     from tutnext.services.push.pool import PushPoolManager
 
     started = time.monotonic()
-    now_utc = datetime.now(UTC)
+    # The trigger's scheduled time, not the (possibly late) start time of this invocation.
+    now_utc = now_utc or datetime.now(UTC)
 
     # Scheduled push pools (07:00, 08:50, ... 21:15 JST) within ±60 s of now.
     await _safe("push_pools", PushPoolManager().process_due_pools())
@@ -64,21 +89,24 @@ async def every_minute() -> None:
     # Less frequent jobs, folded into this single trigger (see module docstring).
     if now_utc.minute % 5 == 0:
         await _safe("monitor", monitor())
-    if (now_utc.hour, now_utc.minute) == (11, 30):
+    if settings.enable_daily_push and await _once("daily_push", (11, 30), now_utc):
         await _safe("daily_push", daily_push())
-    if now_utc.weekday() == 6 and (now_utc.hour, now_utc.minute) == (18, 0):
+    if now_utc.weekday() == 6 and await _once("bus_update", (18, 0), now_utc):
         await _safe("bus_update", bus_update())
 
     # Live Activity transitions: ONE pass per invocation. Keeping the invocation short matters
     # more than the server's 10 s granularity: while a Python invocation is suspended in this
     # isolate, any other event entering Python fails with Pyodide's "Cannot enter a promising
     # task" SystemError, so a 48 s loop here made ~1/3 of API requests fail (2026-10-03).
+    la_started = time.monotonic()
     try:
         sent = await dispatch_live_activity_pushes()
         if sent:
             logger.info("LA dispatcher: sent %d pushes", sent)
     except Exception as e:  # noqa: BLE001
         logger.error("LA dispatcher error: %s", e)
+    if time.monotonic() - la_started > 2:
+        logger.info("cron job la_dispatch took %.1fs", time.monotonic() - la_started)
     await _safe("la_pending_retry", retry_pending_schedules())
     await _safe("rate_counter_gc", _purge_rate_counters())
     purge = getattr(redis, "purge_expired", None)
@@ -132,10 +160,16 @@ _JOBS = {
 }
 
 
-async def run_cron(cron: str) -> None:
+async def run_cron(cron: str, scheduled_ms: float | None = None) -> None:
     job = _JOBS.get(cron.strip())
     if job is None:
         logger.warning("unknown cron expression %r — nothing to run", cron)
         return
     logger.info("cron %s → %s", cron, job.__name__)
-    await job()
+    if job is every_minute and scheduled_ms:
+        seconds = float(scheduled_ms)
+        if seconds > 1e11:  # JS gives milliseconds; accept seconds too
+            seconds /= 1000
+        await every_minute(datetime.fromtimestamp(seconds, UTC))
+    else:
+        await job()

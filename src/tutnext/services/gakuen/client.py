@@ -24,6 +24,7 @@ Helper classes live in their own modules:
 # tutnext/services/gakuen/client.py
 import re
 import logging
+from urllib.parse import urljoin
 import json
 import urllib.parse
 from typing import TYPE_CHECKING, Any, Optional, Union, Literal
@@ -187,7 +188,12 @@ class GakuenAPI:
             self._state.update_from_soup(soup)
             if soup.find("dt", class_="msgArea"):  # 重要アンケートがある場合
                 _log_interstitial_shape(soup, self.user_id)
-                soup = await self._to_home_page()
+                # A browser posts the logo click to the *current* page's form action (the
+                # survey screen), with that page's ViewState. Posting it to Bsa00101.xhtml
+                # made T-NEXT answer 500 for every student with a pending survey.
+                header = soup.find("form", id="headerForm")
+                action = header.get("action") if header else None
+                soup = await self._to_home_page(urljoin(self.base_url, action) if action else None)
                 self._state.update_from_soup(soup)
             self._ids.extract_desktop_ids(soup)
             await self._fetch_class_list(soup)
@@ -1236,8 +1242,8 @@ class GakuenAPI:
                 error_code="UNEXPECTED_MOBILE_LOGIN_ERROR",
             )
 
-    async def _to_home_page(self) -> BeautifulSoup:
-        """ホームページに移動"""
+    async def _to_home_page(self, post_url: str | None = None) -> BeautifulSoup:
+        """ホームページに移動（*post_url*: 表示中ページの headerForm action。省略時はホーム画面）"""
         home_url = f"{self.base_url}/uprx/up/bs/bsa001/Bsa00101.xhtml"
         data = {
             "headerForm": "headerForm",
@@ -1250,12 +1256,14 @@ class GakuenAPI:
             "rx.sync.source": "headerForm:logo",
         }
         try:
-            soup = await self._http.fetch(home_url, method="POST", data=data)
+            soup = await self._http.fetch(post_url or home_url, method="POST", data=data)
             if not isinstance(soup, BeautifulSoup):
                 raise GakuenAPIError(
                     "ホームページの取得に失敗しました",
                     error_code="HOME_PAGE_ERROR",
                 )
+            if post_url:
+                logger.info("[%s] ホームページ: logo POST to the survey page's form action succeeded", self.user_id)
             return soup
         except Exception as e:
             first_error = e

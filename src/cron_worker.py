@@ -25,4 +25,4 @@ class Default(WorkerEntrypoint):
         runtime.set_env(self.env)
         from tutnext.scheduler import run_cron
 
-        await run_cron(controller.cron)
+        await run_cron(controller.cron, getattr(controller, "scheduledTime", None))

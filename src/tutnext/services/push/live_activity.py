@@ -569,6 +569,16 @@ async def schedule_push_to_start_for_unregistered_users(known_usernames: set[str
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+async def _due_keys(pattern: str, now_ts: float) -> list[str]:
+    """Keys under *pattern* with something due. On D1 this is one query: scanning every
+    user's key and popping each (one D1 round trip per user) made every cron run take
+    ~25 s once all users had transitions (2026-10-04 evening)."""
+    zkeys_due = getattr(redis, "zkeys_due", None)
+    if zkeys_due is not None:
+        return [_decode(k) for k in await zkeys_due(pattern, now_ts)]
+    return [_decode(k) async for k in redis.scan_iter(pattern)]
+
+
 async def dispatch_live_activity_pushes() -> int:
     """Check all users' transition / start sorted sets and send due pushes.
 
@@ -577,7 +587,7 @@ async def dispatch_live_activity_pushes() -> int:
     now_ts = datetime.now(JAPAN_TZ).timestamp()
     total_sent = 0
 
-    keys = [_decode(k) async for k in redis.scan_iter("la:transitions:*")]
+    keys = await _due_keys("la:transitions:*", now_ts)
     for key in keys:
         username = key.split(":", 2)[2]
         while True:
@@ -586,7 +596,7 @@ async def dispatch_live_activity_pushes() -> int:
                 break
             total_sent += await _dispatch_transition(username, key, json.loads(_decode(member_raw)))
 
-    start_keys = [_decode(k) async for k in redis.scan_iter("la:start:*")]
+    start_keys = await _due_keys("la:start:*", now_ts)
     for key in start_keys:
         username = key.split(":", 2)[2]
         while True:

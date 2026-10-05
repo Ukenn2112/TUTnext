@@ -21,10 +21,10 @@ export interface Env {
 }
 
 // Per-student budget on LOGIN_ROUTES per 60 s window. The app makes ~5–7 such calls when it
-// opens; this only bites scripted guessing against one student. Counted exactly in D1 (the
+// opens and bursts of ~20/min happen in normal use; this only bites scripted guessing. Counted exactly in D1 (the
 // Workers Rate Limiting binding never enforced on this account in testing, 2026-10-04).
 // Per-IP flooding is handled by the zone's WAF rate-limiting rule (docs §9).
-const LOGIN_PER_USER_PER_MINUTE = 12;
+const LOGIN_PER_USER_PER_MINUTE = 30; // 12 throttled a real user re-registering Live Activities (2026-10-05)
 
 async function underUserBudget(db: D1Database, id: string): Promise<boolean> {
   try {

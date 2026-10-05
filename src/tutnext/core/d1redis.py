@@ -384,6 +384,18 @@ def _cmd_zpop_due(key: str, max_score: float) -> Command:
     return stmts, extract
 
 
+def _cmd_zkeys_due(pattern: str, max_score: float) -> Command:
+    """Keys matching *pattern* that hold at least one member with score <= max_score."""
+    stmts: list[Stmt] = [
+        (
+            "SELECT DISTINCT z.key AS key FROM kv_zset z JOIN kv_meta m ON m.key = z.key "
+            f"WHERE z.key GLOB ? AND z.score <= ? AND {_ALIVE}",
+            (pattern, float(max_score), _now()),
+        )
+    ]
+    return stmts, lambda results: [row["key"] for row in _rows(results[0])]
+
+
 def _cmd_scan(pattern: str) -> Command:
     stmts: list[Stmt] = [
         (f"SELECT key FROM kv_meta m WHERE key GLOB ? AND {_ALIVE} ORDER BY key", (pattern, _now()))
@@ -540,6 +552,10 @@ class D1Redis:
         if not members:
             return 0
         return await self._run(_cmd_zrem(key, members))
+
+    async def zkeys_due(self, pattern: str, max_score: float) -> list[str]:
+        """One query instead of scanning every key (see live_activity.dispatch_live_activity_pushes)."""
+        return await self._run(_cmd_zkeys_due(pattern, max_score))
 
     async def zpop_due(self, key: str, max_score: float) -> str | None:
         return await self._run(_cmd_zpop_due(key, max_score))
