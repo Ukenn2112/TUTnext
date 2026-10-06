@@ -72,6 +72,15 @@ async def send_schedule(username=None, password=None):
         if digest_matches(failed_text, username, password):
             raise HTTPException(status_code=503, detail=_SURVEY_PENDING_MESSAGE)
 
+    try:
+        return await _build_ical(username, password, cache_key, fail_key)
+    except GakuenAPIError as e:
+        if getattr(e, "error_code", None) == "SESSION_BUSY":  # another request for this student holds the lock
+            raise HTTPException(status_code=503, detail=str(e))
+        raise
+
+
+async def _build_ical(username: str, password: str, cache_key: str, fail_key: str) -> Response:
     async with get_session_manager().lock_only(username):
         gakuen = GakuenAPI(username, password, "https://next.tama.ac.jp", http_proxy=HTTP_PROXY)
         logging.info(f"login: 学籍番号: {username}")
