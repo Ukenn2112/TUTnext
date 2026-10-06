@@ -17,6 +17,7 @@ Redis keys used by this module
 ``la:pending_schedule:{username}`` JSON retry record for /register  (TTL → midnight + 1 h)
 ``la:schedule:{username}:{date}``  cached raw schedule payload      (TTL 300 s)
 """
+import asyncio
 import json
 import logging
 from datetime import date as date_type
@@ -30,6 +31,9 @@ from tutnext.services.gakuen.session_manager import get_session_manager
 from tutnext.services.push.apns_client import NotificationRequest, PushType, get_apns_client
 
 logger = logging.getLogger(__name__)
+
+_DISPATCH_CONCURRENCY = 16  # users dispatched at once (D1 pops + APNs requests)
+_UNREGISTERED_CONCURRENCY = 4  # T-NEXT logins at once for push-to-start pre-scheduling
 
 # Apple reference date offset: 2001-01-01 00:00:00 UTC
 _APPLE_EPOCH_OFFSET = 978307200.0
@@ -545,24 +549,29 @@ async def schedule_push_to_start_for_unregistered_users(known_usernames: set[str
     push-to-start token without a device push registration are handled here
     using the encryptedPassword captured by ``/live-activity/push-to-start``.
     """
-    scheduled = 0
     keys = [_decode(k) async for k in redis.scan_iter("la:pts:*")]
-    for key in keys:
-        username = key.split(":", 2)[2]
-        if username.startswith("pw:") or username in known_usernames:
-            continue
-        password = await redis.get(f"la:pts:pw:{username}")
-        if not password:
-            continue
-        try:
-            data = await fetch_day_schedule(
-                username, _decode(password), date_type.today() + timedelta(days=1)
-            )
-            if await schedule_push_to_start(username, data):
-                scheduled += 1
-        except Exception as e:
-            logger.warning("LA: push-to-start pre-scheduling failed for %s: %s", username, e)
-    return scheduled
+    usernames = [
+        u for u in (k.split(":", 2)[2] for k in keys) if not u.startswith("pw:") and u not in known_usernames
+    ]
+    # Each user means one T-NEXT login: a few at a time (sequential took ~80 s in the
+    # 20:30 cron run on 2026-10-06), still gentle on the school system.
+    sem = asyncio.Semaphore(_UNREGISTERED_CONCURRENCY)
+
+    async def one(username: str) -> bool:
+        async with sem:
+            password = await redis.get(f"la:pts:pw:{username}")
+            if not password:
+                return False
+            try:
+                data = await fetch_day_schedule(
+                    username, _decode(password), date_type.today() + timedelta(days=1)
+                )
+                return bool(await schedule_push_to_start(username, data))
+            except Exception as e:
+                logger.warning("LA: push-to-start pre-scheduling failed for %s: %s", username, e)
+                return False
+
+    return sum(await asyncio.gather(*(one(u) for u in usernames)))
 
 
 # ---------------------------------------------------------------------------
@@ -585,27 +594,28 @@ async def dispatch_live_activity_pushes() -> int:
     Returns the total number of pushes sent.
     """
     now_ts = datetime.now(JAPAN_TZ).timestamp()
-    total_sent = 0
+    # Users in parallel (bounded), each user's due members in order. At class boundaries
+    # hundreds of users are due at once; one by one took 60–80 s (2026-10-06), so the last
+    # students' activities updated more than a minute late.
+    sem = asyncio.Semaphore(_DISPATCH_CONCURRENCY)
 
-    keys = await _due_keys("la:transitions:*", now_ts)
-    for key in keys:
+    async def drain(key: str, handler) -> int:
         username = key.split(":", 2)[2]
-        while True:
-            member_raw = await redis.eval(_LUA_POP_DUE, 1, key, str(now_ts))  # type: ignore[misc]
-            if member_raw is None:
-                break
-            total_sent += await _dispatch_transition(username, key, json.loads(_decode(member_raw)))
+        sent = 0
+        async with sem:
+            while True:
+                member_raw = await redis.eval(_LUA_POP_DUE, 1, key, str(now_ts))  # type: ignore[misc]
+                if member_raw is None:
+                    return sent
+                sent += await handler(username, key, json.loads(_decode(member_raw)))
 
+    transition_keys = await _due_keys("la:transitions:*", now_ts)
     start_keys = await _due_keys("la:start:*", now_ts)
-    for key in start_keys:
-        username = key.split(":", 2)[2]
-        while True:
-            member_raw = await redis.eval(_LUA_POP_DUE, 1, key, str(now_ts))  # type: ignore[misc]
-            if member_raw is None:
-                break
-            total_sent += await _dispatch_start(username, key, json.loads(_decode(member_raw)))
-
-    return total_sent
+    counts = await asyncio.gather(
+        *(drain(k, _dispatch_transition) for k in transition_keys),
+        *(drain(k, _dispatch_start) for k in start_keys),
+    )
+    return sum(counts)
 
 
 async def _reenqueue(key: str, member: dict, ttl_date: date_type | None = None) -> None:
