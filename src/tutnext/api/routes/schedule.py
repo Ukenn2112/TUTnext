@@ -17,6 +17,7 @@ from tutnext.services.gakuen.session_manager import get_session_manager
 
 router = APIRouter()
 
+_BAD_PASSWORD_MESSAGE = "ログインエラー: ユーザＩＤまたはパスワードが正しくありません。"
 _SURVEY_PENDING_MESSAGE = (
     "T-NEXT に未回答の重要アンケートがあるため時間割を取得できません。"
     "ブラウザで T-NEXT にログインし、アンケートに回答してください。"
@@ -65,6 +66,15 @@ async def send_schedule(username=None, password=None):
 
     # 重要アンケート未回答で T-NEXT のホーム遷移が失敗した直後は、カレンダー購読の再試行ごとに
     # 学校へログインし直さない（同じ資格情報のみ、10 分間）。
+    # 旧パスワードのままのカレンダー購読は数時間おきに再試行し続け、そのたびに学校へ誤ったパスワードで
+    # ログインする（アカウントロックの恐れ）。同じ資格情報での失敗は 6 時間記憶する。
+    badpw_key = f"schedule:ical:badpw:{username}"
+    badpw = await redis.get(badpw_key)
+    if badpw:
+        badpw_text = badpw.decode("utf-8") if isinstance(badpw, bytes) else str(badpw)
+        if digest_matches(badpw_text, username, password):
+            raise HTTPException(status_code=500, detail=_BAD_PASSWORD_MESSAGE)
+
     fail_key = f"schedule:ical:fail:{username}"
     failed = await redis.get(fail_key)
     if failed:
@@ -145,6 +155,8 @@ async def _build_ical(username: str, password: str, cache_key: str, fail_key: st
             if getattr(e, "error_code", None) == "HOME_PAGE_NAVIGATION_ERROR":
                 await redis.set(fail_key, credential_digest(username, password), ex=600)
                 raise HTTPException(status_code=503, detail=_SURVEY_PENDING_MESSAGE)
+            if "パスワードが正しくありません" in str(e):
+                await redis.set(f"schedule:ical:badpw:{username}", credential_digest(username, password), ex=6 * 3600)
             raise HTTPException(status_code=500, detail=str(e))
         except Exception as e:
             logging.error(f"[{username}] error: {e}")

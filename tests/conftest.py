@@ -67,7 +67,8 @@ async def async_client(patched_redis):
 
     with patch("tutnext.core.database.db_manager.init_db", AsyncMock()), \
          patch("tutnext.core.database.db_manager.close", AsyncMock()), \
-         patch("tutnext.core.database.db_manager.get_user_tokens", AsyncMock(return_value=None)):
+         patch("tutnext.core.database.db_manager.get_user_tokens", AsyncMock(return_value=None)), \
+         patch("tutnext.api.auth.ensure_caller", AsyncMock()):  # caller verification: see test_auth.py
         from tutnext.api.app import app
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             yield client

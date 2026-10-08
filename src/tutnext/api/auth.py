@@ -84,6 +84,11 @@ async def reject_unless_caller(response, username: str, encrypted_password: str)
         await ensure_caller(username, encrypted_password)
         return None
     except GakuenAPIError as e:
+        if getattr(e, "error_code", None) == "SESSION_BUSY":
+            # Another request for this student holds the login lock: nothing was rejected,
+            # the caller should just retry (two LA registrations got 403 for this, 2026-10-08).
+            response.status_code = 503
+            return {"status": False, "message": str(e)}
         response.status_code = 403
         return {"status": False, "message": str(e)}  # the school's own (user-facing) message
     except Exception:  # noqa: BLE001 — T-NEXT unreachable etc.; nothing was verified
