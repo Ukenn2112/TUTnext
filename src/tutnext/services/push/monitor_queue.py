@@ -52,16 +52,98 @@ def _spread(usernames: list[str], kind: str, window_seconds: float) -> list[dict
     return [{"body": {"kind": kind, "username": u}, "delaySeconds": int(i * step)} for i, u in enumerate(usernames)]
 
 
-async def dispatch_monitor_cycle() -> int:
-    """Cron side of the monitor: enqueue every user, spread over the monitor interval."""
-    from tutnext.core.database import db_manager
+# Cycle period of the monitor dispatch (cron minute % 5 == 0). A user whose backoff window
+# ends inside the coming cycle is enqueued with a delay that lands just after it ends;
+# later ones are picked up by a later cycle.
+CYCLE_SECONDS = 300
+_CYCLE_HORIZON = CYCLE_SECONDS - 10
 
-    users = await db_manager.get_all_users()
-    names = [u["username"] for u in users]
-    # Finish dispatching inside the cycle so consecutive cycles do not overlap.
-    await _send(_spread(names, KIND_MONITOR, max(settings.monitor_interval_seconds - 30, 0)))
-    logger.info("monitor: enqueued %d users", len(names))
-    return len(names)
+# Same rule as MonitorService.should_check_user, evaluated for every user in one query:
+# skip only while BOTH monitor:backoff:<u> and monitor:last_check:<u> are alive, mirroring
+# tutnext.core.d1redis exactly: the backoff is read with GET (kv_string row JOIN alive
+# kv_meta, _cmd_get), last_check with EXISTS (alive kv_meta only, _cmd_exists).
+_DUE_SQL = """
+SELECT u.username AS username,
+  (SELECT m.expires_at FROM kv_string s JOIN kv_meta m ON m.key = s.key
+     WHERE s.key = 'monitor:backoff:' || u.username
+     AND (m.expires_at IS NULL OR m.expires_at > ?1)) AS backoff_exp,
+  (SELECT count(*) FROM kv_string s JOIN kv_meta m ON m.key = s.key
+     WHERE s.key = 'monitor:backoff:' || u.username
+     AND (m.expires_at IS NULL OR m.expires_at > ?1)) AS backoff_alive,
+  (SELECT m.expires_at FROM kv_meta m WHERE m.key = 'monitor:last_check:' || u.username
+     AND (m.expires_at IS NULL OR m.expires_at > ?1)) AS last_check_exp,
+  (SELECT count(*) FROM kv_meta m WHERE m.key = 'monitor:last_check:' || u.username
+     AND (m.expires_at IS NULL OR m.expires_at > ?1)) AS last_check_alive
+FROM users u ORDER BY u.username
+"""
+
+
+def classify_due(rows: list[dict[str, Any]], now: float) -> tuple[list[str], dict[str, int]]:
+    """From _DUE_SQL rows: (users due now, {user: seconds until due} for this cycle).
+
+    Due now = what should_check_user would answer right now. Users whose backoff window
+    ends within the cycle get the delay that lands 1 s after it ends; the rest wait for a
+    later cycle.
+    """
+    due_now: list[str] = []
+    later: dict[str, int] = {}
+    for r in rows:
+        if not r["backoff_alive"] or not r["last_check_alive"]:
+            due_now.append(r["username"])
+            continue
+        expiries = [e for e in (r["backoff_exp"], r["last_check_exp"]) if e is not None]
+        if not expiries:
+            # Both keys without expiry cannot come from MonitorService (it always sets a TTL);
+            # enqueue anyway so a bad key can never silently stop a user's checks for good.
+            logger.warning("monitor: %s has backoff keys without expiry; enqueuing", r["username"])
+            due_now.append(r["username"])
+            continue
+        wait = min(expiries) - now
+        if wait <= _CYCLE_HORIZON:
+            later[r["username"]] = max(0, int(wait) + 1)
+    return due_now, later
+
+
+def plan_monitor_cycle(rows: list[dict[str, Any]], now: float, window_seconds: float) -> list[dict[str, Any]]:
+    """Messages for one cycle: due-now users spread over *window_seconds* (Layer 4),
+    window-ending users delayed until their window ends."""
+    due_now, later = classify_due(rows, now)
+    return _spread(due_now, KIND_MONITOR, window_seconds) + [
+        {"body": {"kind": KIND_MONITOR, "username": u}, "delaySeconds": d} for u, d in later.items()
+    ]
+
+
+async def dispatch_monitor_cycle() -> int:
+    """Cron side of the monitor: enqueue only users that are (or become) due this cycle.
+
+    Enqueuing everyone and letting the consumer skip users in backoff cost a queue
+    write/read/delete plus a consumer invocation per user every 5 minutes, while usually
+    > 95 % were in backoff (2026-10-08). The consumer still runs should_check_user, so
+    this filter only saves work; it never decides on its own that a check is skipped
+    that should_check_user would allow at delivery time.
+    """
+    import time
+
+    from tutnext.core.d1client import BindingExecutor
+    from tutnext.core.d1redis import _rows
+
+    window = max(settings.monitor_interval_seconds - 30, 0)
+    now = time.time()
+    try:
+        result = (await BindingExecutor("DB").batch([(_DUE_SQL, (now,))]))[0]
+        rows = [dict(r) for r in _rows(result)]
+    except Exception as e:  # noqa: BLE001 — never skip a cycle because of the filter
+        logger.warning("monitor: due-user query failed (%s); enqueuing everyone", e)
+        from tutnext.core.database import db_manager
+
+        names = [u["username"] for u in await db_manager.get_all_users()]
+        await _send(_spread(names, KIND_MONITOR, window))
+        return len(names)
+    messages = plan_monitor_cycle(rows, now, window)
+    if messages:
+        await _send(messages)
+    logger.info("monitor: enqueued %d of %d users", len(messages), len(rows))
+    return len(messages)
 
 
 async def dispatch_daily_push() -> int:
