@@ -29,6 +29,7 @@ MonitorService — 限速版用户作业监测服务
 import asyncio
 import json
 import logging
+import random
 from datetime import datetime
 
 from tutnext.config import settings, redis, HTTP_PROXY, JAPAN_TZ
@@ -108,7 +109,9 @@ class MonitorService:
         # 设置"上次检查"时间戳键，TTL = 当前退避间隔
         backoff_count = int(await redis.get(backoff_key) or 0)
         idx = min(backoff_count, len(self.BACKOFF_INTERVALS) - 1)
-        interval = self.BACKOFF_INTERVALS[idx]
+        # Up to 10 % shorter (never longer): users that were checked in the same cycle drift
+        # apart instead of all becoming due together, which overloaded the queue consumer.
+        interval = int(self.BACKOFF_INTERVALS[idx] * random.uniform(0.9, 1.0))
         last_check_key = f"monitor:last_check:{username}"
         await redis.set(last_check_key, "1", ex=interval)
 

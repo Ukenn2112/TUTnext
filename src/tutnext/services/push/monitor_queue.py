@@ -73,7 +73,9 @@ SELECT u.username AS username,
   (SELECT m.expires_at FROM kv_meta m WHERE m.key = 'monitor:last_check:' || u.username
      AND (m.expires_at IS NULL OR m.expires_at > ?1)) AS last_check_exp,
   (SELECT count(*) FROM kv_meta m WHERE m.key = 'monitor:last_check:' || u.username
-     AND (m.expires_at IS NULL OR m.expires_at > ?1)) AS last_check_alive
+     AND (m.expires_at IS NULL OR m.expires_at > ?1)) AS last_check_alive,
+  (SELECT count(*) FROM kv_meta m WHERE m.key = 'monitor:queued:' || u.username
+     AND m.expires_at > ?1) AS queued
 FROM users u ORDER BY u.username
 """
 
@@ -88,6 +90,8 @@ def classify_due(rows: list[dict[str, Any]], now: float) -> tuple[list[str], dic
     due_now: list[str] = []
     later: dict[str, int] = {}
     for r in rows:
+        if r.get("queued"):
+            continue  # a message for this user is still waiting in the queue
         if not r["backoff_alive"] or not r["last_check_alive"]:
             due_now.append(r["username"])
             continue
@@ -142,8 +146,38 @@ async def dispatch_monitor_cycle() -> int:
     messages = plan_monitor_cycle(rows, now, window)
     if messages:
         await _send(messages)
+        await _mark_queued(messages, now)
     logger.info("monitor: enqueued %d of %d users", len(messages), len(rows))
     return len(messages)
+
+
+# While a user's message waits in the queue it must not be enqueued again: when checks
+# ran slowly (T-NEXT sluggish before its 03:00 maintenance, 2026-10-11) the still-due
+# users were re-enqueued every cycle and ~13k duplicate deliveries piled up. The marker
+# outlives the message's delay by QUEUED_GRACE; the consumer deletes it when done, and if
+# a message is ever lost the marker simply expires and the user is enqueued again.
+QUEUED_GRACE = 15 * 60
+_MARK_CHUNK = 40  # 2 bound params per row; D1 allows 100 per statement
+
+
+async def _mark_queued(messages: list[dict[str, Any]], now: float) -> None:
+    from tutnext.core.d1client import BindingExecutor
+
+    rows = [(f"monitor:queued:{m['body']['username']}", now + m.get("delaySeconds", 0) + QUEUED_GRACE) for m in messages]
+    stmts = []
+    for i in range(0, len(rows), _MARK_CHUNK):
+        chunk = rows[i : i + _MARK_CHUNK]
+        values = ", ".join("(?, ?)" for _ in chunk)
+        params = tuple(x for row in chunk for x in row)
+        stmts.append((
+            f"INSERT INTO kv_meta (key, expires_at) VALUES {values} "
+            "ON CONFLICT(key) DO UPDATE SET expires_at = excluded.expires_at",
+            params,
+        ))
+    try:
+        await BindingExecutor("DB").batch(stmts)
+    except Exception as e:  # noqa: BLE001 — worst case: a duplicate message next cycle
+        logger.warning("monitor: could not mark %d users as queued: %s", len(rows), e)
 
 
 async def dispatch_daily_push() -> int:
@@ -165,6 +199,19 @@ async def dispatch_daily_push() -> int:
 
 
 async def _handle_monitor(service: Any, username: str, kind: str) -> None:
+    from tutnext.config import redis
+
+    try:
+        await _check_monitor(service, username, kind)
+    finally:
+        if kind == KIND_MONITOR:  # the dispatcher may enqueue this user again
+            try:
+                await redis.delete(f"monitor:queued:{username}")
+            except Exception:  # noqa: BLE001 — it expires on its own
+                pass
+
+
+async def _check_monitor(service: Any, username: str, kind: str) -> None:
     from tutnext.config import redis
     from tutnext.core.d1lease import get_lease
     from tutnext.core.database import db_manager
