@@ -43,6 +43,16 @@ from tutnext.services.push.pool import PushPoolManager
 logger = logging.getLogger(__name__)
 
 
+async def _record_health(ok: bool, username: str | None = None) -> None:
+    """Feed the Workers circuit breaker (tutnext.services.push.breaker); server: no-op."""
+    from tutnext.runtime import IS_WORKERS
+
+    if IS_WORKERS:
+        from tutnext.services.push import breaker
+
+        await breaker.record(ok, username)
+
+
 class MonitorService:
     """限速版用户作业监测服务。
 
@@ -238,6 +248,7 @@ class MonitorService:
                             )
                             if classroom_kadai_list:
                                 kadai_list.extend(classroom_kadai_list)
+                        await _record_health(True, username)
                         break
                 except GakuenPermissionError as perm_error:
                     logger.warning(
@@ -263,6 +274,8 @@ class MonitorService:
                         )
                         from tutnext.services.push.sender import record_api_error
                         await record_api_error()
+                        if getattr(api_error, "error_code", None) != "SESSION_BUSY":  # contention, not an outage
+                            await _record_health(False)
                         raise api_error
                     logger.warning(
                         f"用户 {username} 获取作业数据失败，重试第 {attempt + 1} 次: {api_error}"

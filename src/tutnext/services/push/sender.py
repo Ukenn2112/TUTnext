@@ -16,6 +16,29 @@ API_ERROR_NOTIFIED_KEY = "api_error_notified"
 API_ERROR_EXPIRY = 86400  # 24小时(秒)
 
 
+async def notify_operator(title: str, message: str) -> None:
+    """Send a message to the operator through NOTIFICATION_API_URL ("…/{title}/{message}").
+
+    Both parts are URL-encoded: they become path segments, and an unencoded "/" (as in
+    "50次/天") split the message into extra segments.
+    """
+    from urllib.parse import quote
+
+    notification_api_url = settings.notification_api_url
+    if not notification_api_url:
+        logging.info("通知API未配置，跳过: %s %s", title, message)
+        return
+    try:
+        notification_url = notification_api_url.format(title=quote(title, safe=""), message=quote(message, safe=""))
+        response = await core_http.get(notification_url, timeout=5)
+        if response.status == 200:
+            logging.info("通知API调用成功: %s", title)
+        else:
+            logging.warning(f"通知API调用失败,状态码: {response.status}")
+    except Exception as notify_error:
+        logging.error(f"发送通知时发生异常: {notify_error}")
+
+
 async def record_api_error():
     """记录API错误并检查是否达到限制"""
     try:
@@ -35,19 +58,7 @@ async def record_api_error():
                 logging.critical(f"API错误次数已达到限制({API_ERROR_LIMIT}次/天),发送通知")
                 await redis.set(API_ERROR_NOTIFIED_KEY, "1", ex=API_ERROR_EXPIRY)
 
-                notification_api_url = settings.notification_api_url
-                if notification_api_url:
-                    try:
-                        title = "TUTnext推送服务通知"
-                        message = f"API错误次数已达到限制({API_ERROR_LIMIT}次/天)"
-                        notification_url = notification_api_url.format(title=title, message=message)
-                        response = await core_http.get(notification_url, timeout=5)
-                        if response.status == 200:
-                            logging.info("通知API调用成功")
-                        else:
-                            logging.warning(f"通知API调用失败,状态码: {response.status}")
-                    except Exception as notify_error:
-                        logging.error(f"发送通知时发生异常: {notify_error}")
+                await notify_operator("TUTnext推送服务通知", f"API错误次数已达到限制({API_ERROR_LIMIT}次/天)")
     except Exception as e:
         logging.error(f"记录API错误时发生异常: {e}")
 

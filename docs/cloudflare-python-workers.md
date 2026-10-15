@@ -274,3 +274,13 @@ tutnext-bus   ◀── gateway /bus/*（PDF 解析只在这里，按需懒加�
 * **仍需 app 配合**：`/oauth/tokens|revoke|status` 现在接受可选的 `encryptedPassword` 并在提供时验证；当前 app 只发 `username`（`GoogleOAuthService.swift`），所以仍可凭学籍番号查询/撤销 Google 绑定。app 发版带上该字段后，把它改为必填。
 * **需要用户操作**：在 Cloudflare 后台吊销服务器用的 API token `tutnext-server-d1`（D1 读写，服务器已停用）；修改服务器 SSH 密码并改用密钥登录；建议把 `qaq.tw` 区域的最低 TLS 版本提到 1.2、SSL 模式改为 Full (strict)（影响整个区域的其他子域，需确认）。
 * **后续可做**：D1 `users.encryptedpassword`（可直接用于登录）和 `user_tokens.refresh_token` 目前明文存储，可用 Worker secret 做应用层 AES-GCM 加密。
+
+## 10. monitor 熔断（2026-10-16）
+
+背景：10-10 06:00 → 10-11 03:00 学校课题接口对所有人返回 500，monitor 对每人重试 5 次、队列积压。
+
+* **打开**：最近 10 分钟学校侧失败 ≥ 8 次且成功 < 失败的 20%（密码错误、权限错误、`SESSION_BUSY` 不计）。状态键 `monitor:breaker`（D1）。
+* **打开期间**：cron 不再入队常规检查；队列里已有的 monitor/同学/每晚推送消息直接跳过（不重试）；每 2 分钟发 2 个探测（上次成功的用户 + 随机用户，只读课题，不推送）；3:00–6:10 不探测。
+* **恢复**：任一探测成功 → 立即把全部用户分散在 3 分钟内补查（`catchup`，不看退避，带 `monitor:queued` 标记），若在 20:30–23:30 JST 之间则给没收到今晚推送的人补发，然后关闭熔断。补查入队失败时熔断保持打开，下次探测重试。
+* **通知**：打开和恢复都通过 `NOTIFICATION_API_URL` 通知运维（标题/内容做 URL 编码；之前「50次/天」里的 `/` 会截断路径）。
+* **手动操作**：强制关闭 = 删除 D1 里的 `monitor:breaker`（`DELETE FROM kv_meta WHERE key='monitor:breaker'; DELETE FROM kv_string WHERE key='monitor:breaker'`），下一轮恢复正常入队（不会自动补查）。

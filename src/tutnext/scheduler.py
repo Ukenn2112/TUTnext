@@ -87,6 +87,10 @@ async def every_minute(now_utc: datetime | None = None) -> None:
     await _safe("push_pools", PushPoolManager().process_due_pools())
 
     # Less frequent jobs, folded into this single trigger (see module docstring).
+    if settings.enable_monitor_push and not _in_silent_window(now_utc.astimezone(JAPAN_TZ)):
+        from tutnext.services.push import breaker
+
+        await _safe("breaker", breaker.evaluate(now_utc))
     if now_utc.minute % 5 == 0:
         await _safe("monitor", monitor())
     if settings.enable_daily_push and await _once("daily_push", (11, 30), now_utc):

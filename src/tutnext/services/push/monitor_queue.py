@@ -32,9 +32,17 @@ QUEUE_BINDING = "MONITOR_QUEUE"
 KIND_MONITOR = "monitor"
 KIND_CLASSMATE = "classmate"  # Layer 5: skip the backoff filter
 KIND_DAILY = "daily"
+KIND_PROBE = "probe"      # breaker open: one read-only fetch to detect recovery
+KIND_CATCHUP = "catchup"  # breaker closed: re-check everyone now (skip backoff, no fan-out)
 _SEND_BATCH_MAX = 100  # Queues sendBatch limit
 INFLIGHT_TTL = 180  # seconds; longest check (5 attempts with logins + sleeps) stays well below
 DAILY_DONE_TTL = 36 * 3600
+
+
+async def breaker_open() -> bool:
+    from tutnext.services.push import breaker
+
+    return await breaker.is_open()
 
 
 def _in_silent_window(now: datetime) -> bool:
@@ -118,6 +126,15 @@ def plan_monitor_cycle(rows: list[dict[str, Any]], now: float, window_seconds: f
 
 
 async def dispatch_monitor_cycle() -> int:
+    from tutnext.services.push import breaker
+
+    if await breaker.is_open():
+        logger.info("monitor: breaker open, regular cycle skipped (probing instead)")
+        return 0
+    return await _dispatch_monitor_cycle()
+
+
+async def _dispatch_monitor_cycle() -> int:
     """Cron side of the monitor: enqueue only users that are (or become) due this cycle.
 
     Enqueuing everyone and letting the consumer skip users in backoff cost a queue
@@ -198,13 +215,13 @@ async def dispatch_daily_push() -> int:
     return len(names)
 
 
-async def _handle_monitor(service: Any, username: str, kind: str) -> None:
+async def _handle_monitor(service: Any, username: str, kind: str, *, queued: bool | None = None) -> None:
     from tutnext.config import redis
 
     try:
         await _check_monitor(service, username, kind)
     finally:
-        if kind == KIND_MONITOR:  # the dispatcher may enqueue this user again
+        if queued if queued is not None else kind == KIND_MONITOR:  # the dispatcher may enqueue this user again
             try:
                 await redis.delete(f"monitor:queued:{username}")
             except Exception:  # noqa: BLE001 — it expires on its own
@@ -218,6 +235,8 @@ async def _check_monitor(service: Any, username: str, kind: str) -> None:
 
     if _in_silent_window(datetime.now(JAPAN_TZ)):
         return
+    if kind in (KIND_MONITOR, KIND_CLASSMATE) and await breaker_open():
+        return  # T-NEXT is down: don't spend 5 failing logins on this user
     if kind == KIND_MONITOR and not await service.should_check_user(username):
         return
     # One check per user at a time: a slow consumer must not overlap the next cycle's
@@ -249,6 +268,8 @@ async def _handle_daily(push_manager: Any, username: str) -> None:
     from tutnext.core.database import db_manager
     from tutnext.services.push.sender import check_tmrw_course_user_push
 
+    if await breaker_open():
+        return  # T-NEXT is down; breaker.recover() re-sends tonight's push to whoever missed it
     # Queues deliver at least once; a redelivered batch must not repeat the 休講 alert.
     done_key = f"daily_done:{username}:{datetime.now(JAPAN_TZ).date().isoformat()}"
     if await redis.exists(done_key):
@@ -279,6 +300,14 @@ async def handle_batch(bodies: list[dict[str, Any]], ack: Callable[[int], None] 
                 logger.warning("monitor queue: malformed message %r", body)
             elif kind in (KIND_MONITOR, KIND_CLASSMATE):
                 await _handle_monitor(service, username, kind)
+            elif kind == KIND_CATCHUP:
+                # skip backoff, no fan-out; it was marked queued like a regular message
+                await _handle_monitor(service, username, KIND_CLASSMATE, queued=True)
+            elif kind == KIND_PROBE:
+                from tutnext.services.push import breaker
+
+                if await breaker.is_open() and await breaker.probe(username):
+                    await breaker.recover()
             elif kind == KIND_DAILY:
                 await _handle_daily(push_manager, username)
             else:
