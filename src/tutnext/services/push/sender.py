@@ -16,27 +16,34 @@ API_ERROR_NOTIFIED_KEY = "api_error_notified"
 API_ERROR_EXPIRY = 86400  # 24小时(秒)
 
 
-async def notify_operator(title: str, message: str) -> None:
+async def notify_operator(title: str, message: str) -> bool:
     """Send a message to the operator through NOTIFICATION_API_URL ("…/{title}/{message}").
 
     Both parts are URL-encoded: they become path segments, and an unencoded "/" (as in
     "50次/天") split the message into extra segments.
     """
-    from urllib.parse import quote
+    from urllib.parse import quote, urlsplit
 
-    notification_api_url = settings.notification_api_url
+    log = logging.getLogger("tutnext.notify")
+    try:
+        notification_api_url = settings.notification_api_url
+    except Exception as e:  # noqa: BLE001
+        log.error("通知: 读取 NOTIFICATION_API_URL 失败: %r", e)
+        return False
     if not notification_api_url:
-        logging.info("通知API未配置，跳过: %s %s", title, message)
-        return
+        log.warning("通知: NOTIFICATION_API_URL 未配置，跳过: %s", title)
+        return False
+    log.info("通知: 发送 '%s' → %s", title, urlsplit(notification_api_url).netloc)
     try:
         notification_url = notification_api_url.format(title=quote(title, safe=""), message=quote(message, safe=""))
-        response = await core_http.get(notification_url, timeout=5)
+        response = await core_http.get(notification_url, timeout=10)
         if response.status == 200:
-            logging.info("通知API调用成功: %s", title)
-        else:
-            logging.warning(f"通知API调用失败,状态码: {response.status}")
-    except Exception as notify_error:
-        logging.error(f"发送通知时发生异常: {notify_error}")
+            log.info("通知: 成功 '%s'", title)
+            return True
+        log.warning("通知: 失败 '%s'，状态码 %s", title, response.status)
+    except Exception as notify_error:  # noqa: BLE001
+        log.error("通知: 发送 '%s' 时异常: %r", title, notify_error)
+    return False
 
 
 async def record_api_error():

@@ -284,3 +284,6 @@ tutnext-bus   ◀── gateway /bus/*（PDF 解析只在这里，按需懒加�
 * **恢复**：任一探测成功 → 立即把全部用户分散在 3 分钟内补查（`catchup`，不看退避，带 `monitor:queued` 标记），若在 20:30–23:30 JST 之间则给没收到今晚推送的人补发，然后关闭熔断。补查入队失败时熔断保持打开，下次探测重试。
 * **通知**：打开和恢复都通过 `NOTIFICATION_API_URL` 通知运维（标题/内容做 URL 编码；之前「50次/天」里的 `/` 会截断路径）。
 * **手动操作**：强制关闭 = 删除 D1 里的 `monitor:breaker`（`DELETE FROM kv_meta WHERE key='monitor:breaker'; DELETE FROM kv_string WHERE key='monitor:breaker'`），下一轮恢复正常入队（不会自动补查）。
+* **通知测试**：往 D1 写 `ops:test_notify`，cron 下一分钟从 cron Worker 发出测试通知并删除该键：
+  `npx wrangler d1 execute tutnext --remote --command "INSERT OR REPLACE INTO kv_meta VALUES ('ops:test_notify', NULL); INSERT OR REPLACE INTO kv_string VALUES ('ops:test_notify', 'テスト')"`
+* **注意**：本地 `.env` 的 `NOTIFICATION_API_URL` 是占位符（`aaa.com`），不能拿来设置 Worker secret；真实地址在服务器的 `.env`（`api.ukenn.top`）。2026-10-21 之前 cron/monitor 的通知因此全部发到了占位地址。

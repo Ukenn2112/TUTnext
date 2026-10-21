@@ -94,7 +94,7 @@ async def evaluate(now_utc: datetime) -> None:
         if fail >= OPEN_MIN_FAILURES and ok < fail * OPEN_MAX_OK_RATIO:
             opened = {"opened_at": now_utc.timestamp(), "failures": fail, "ok": ok}
             await redis.set(STATE_KEY, json.dumps(opened))
-            logger.warning("breaker: OPEN (T-NEXT failures=%d ok=%d in 10 min)", fail, ok)
+            logger.warning("breaker: OPEN (T-NEXT failures=%d ok=%d in 10 min); notifying operator", fail, ok)
             await notify("TUTnext 監視を一時停止",
                          f"学校システムの課題取得が連続で失敗しています（10分間に失敗{fail}件・成功{ok}件）。"
                          f"監視を止め、{PROBE_EVERY_MINUTES}分ごとに復旧を確認します。")
@@ -199,7 +199,31 @@ async def _catch_up_daily(names: list[str]) -> int:
     return len(missing)
 
 
-async def notify(title: str, message: str) -> None:
+async def notify(title: str, message: str) -> bool:
     from tutnext.services.push.sender import notify_operator
 
-    await notify_operator(title, message)
+    try:
+        sent = await notify_operator(title, message)
+    except Exception as e:  # noqa: BLE001
+        logger.error("breaker: operator notification raised: %r", e, exc_info=True)
+        return False
+    logger.info("breaker: operator notification '%s' sent=%s", title, sent)
+    return sent
+
+
+OPS_TEST_NOTIFY_KEY = "ops:test_notify"
+
+
+async def ops_test_notify() -> None:
+    """Ops hook: if D1 holds ops:test_notify, send that text through the operator channel
+    from the cron Worker (the path the "breaker open" alert takes), then delete the key.
+
+        npx wrangler d1 execute tutnext --remote --command \
+          "INSERT INTO kv_meta VALUES ('ops:test_notify', NULL); INSERT INTO kv_string VALUES ('ops:test_notify', 'テスト')"
+    """
+    text = _decode(await redis.get(OPS_TEST_NOTIFY_KEY))
+    if text is None:
+        return
+    await redis.delete(OPS_TEST_NOTIFY_KEY)
+    logger.warning("ops: test notification requested")
+    await notify("TUTnext 通知テスト", text)
