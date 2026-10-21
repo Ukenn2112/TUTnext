@@ -287,3 +287,4 @@ tutnext-bus   ◀── gateway /bus/*（PDF 解析只在这里，按需懒加�
 * **通知测试**：往 D1 写 `ops:test_notify`，cron 下一分钟从 cron Worker 发出测试通知并删除该键：
   `npx wrangler d1 execute tutnext --remote --command "INSERT OR REPLACE INTO kv_meta VALUES ('ops:test_notify', NULL); INSERT OR REPLACE INTO kv_string VALUES ('ops:test_notify', 'テスト')"`
 * **注意**：本地 `.env` 的 `NOTIFICATION_API_URL` 是占位符（`aaa.com`），不能拿来设置 Worker secret；真实地址在服务器的 `.env`（`api.ukenn.top`）。2026-10-21 之前 cron/monitor 的通知因此全部发到了占位地址。
+* **夜间静默（2026-10-21 起）**：课题监测在 0:00–7:00 JST 完全暂停（`monitor_queue.MONITOR_QUIET_HOURS`），熔断也不探测；7:00 第一轮所有人退避都已过期，会在一个周期内全部检查一遍。第 1 节课 9:00 开始（`live_activity.PERIOD_TIMES`）。每晚 20:30 推送、Live Activity、定时推送池不受影响。

@@ -10,7 +10,7 @@ when (UTC)                            job
 ====================================  ===============================================
 every minute                          push pools, Live Activity dispatcher (one pass),
                                       pending retries, TTL purge
-minute % 5 == 0 (not 3:00–6:10 JST)   enqueue assignment monitor (only if ENABLE_MONITOR_PUSH)
+minute % 5 == 0 (not 0:00–7:00 JST)   enqueue assignment monitor (only if ENABLE_MONITOR_PUSH)
 11:30                                 enqueue next-day push (only if ENABLE_DAILY_PUSH)
 Sunday 18:00 (Monday 03:00 JST)       bus timetable update
 ====================================  ===============================================
@@ -39,8 +39,10 @@ CRON_BUS = "0 18 * * SUN"
 
 
 def _in_silent_window(now: datetime) -> bool:
-    """3:00–6:10 JST: the school system's maintenance window."""
-    return 3 <= now.hour < 6 or (now.hour == 6 and now.minute < 10)
+    """Overnight pause of the assignment monitor (monitor_queue.MONITOR_QUIET_HOURS, JST)."""
+    from tutnext.services.push.monitor_queue import _in_silent_window as quiet
+
+    return quiet(now)
 
 
 async def _safe(name: str, coro) -> None:
@@ -133,7 +135,7 @@ async def monitor() -> None:
         return
     now = datetime.now(JAPAN_TZ)
     if _in_silent_window(now):
-        logger.info("静默时段 (3:00-6:10 JST)，跳过监测")
+        logger.info("夜间静默时段 (0:00-7:00 JST)，跳过监测")
         return
     # Workers: dispatch one queue message per user; the tutnext-monitor Worker does the checks.
     from tutnext.services.push.monitor_queue import dispatch_monitor_cycle

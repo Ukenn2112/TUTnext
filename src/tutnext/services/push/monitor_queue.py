@@ -45,8 +45,15 @@ async def breaker_open() -> bool:
     return await breaker.is_open()
 
 
+# Assignment checks pause overnight (JST, [start, end)): new assignments at night are rare,
+# the first period starts at 09:00 (live_activity.PERIOD_TIMES), and T-NEXT's own
+# maintenance is 03:00–06:00. At 07:00 every user's backoff has expired, so the first
+# cycle checks everyone (spread over the cycle window).
+MONITOR_QUIET_HOURS = (0, 7)
+
+
 def _in_silent_window(now: datetime) -> bool:
-    return 3 <= now.hour < 6 or (now.hour == 6 and now.minute < 10)
+    return MONITOR_QUIET_HOURS[0] <= now.hour < MONITOR_QUIET_HOURS[1]
 
 
 async def _send(messages: list[dict[str, Any]]) -> None:
