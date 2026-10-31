@@ -14,6 +14,14 @@ from workers import Response, WorkerEntrypoint
 
 from tutnext import runtime
 
+# Imported at module level on purpose: Python Workers snapshot top-level imports at deploy
+# time, so a cold start does not re-import them. Since 2026-10-22 ~11:00 JST every cron
+# invocation starts cold, and with these as lazy imports each minute paid ~2.5 s of CPU
+# re-importing them (cron CPU went from ~35 ms to ~2500 ms per run). None of them reads
+# the Worker env at import time. pdfplumber (weekly bus job) stays lazy.
+from tutnext import scheduler  # noqa: E402,F401
+from tutnext.services.push import apns_client, breaker, live_activity, monitor_queue, pool, sender  # noqa: E402,F401
+
 
 class Default(WorkerEntrypoint):
     async def fetch(self, request):
