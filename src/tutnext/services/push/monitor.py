@@ -68,7 +68,20 @@ class MonitorService:
     # 连续无变化 1 次 → 等 5 分钟；2 次 → 等 10 分钟；
     # 3 次 → 等 20 分钟；4 次及以上 → 等 30 分钟
     BACKOFF_INTERVALS = [300, 600, 1200, 1800]
+    # Off-peak (Sat/Sun and 22:00–24:00 JST): one more step, 5 → 60 minutes, to save
+    # Workers CPU when teachers rarely post (user's choice 2026-11-07).
+    OFFPEAK_BACKOFF_INTERVALS = [300, 600, 1200, 1800, 3600]
     BACKOFF_KEY_PREFIX = "monitor:backoff:"
+
+    @staticmethod
+    def is_offpeak(now: datetime) -> bool:
+        local = now.astimezone(JAPAN_TZ)
+        return local.weekday() >= 5 or local.hour >= 22
+
+    @classmethod
+    def backoff_intervals(cls, now: datetime | None = None) -> list[int]:
+        now = now or datetime.now(JAPAN_TZ)
+        return cls.OFFPEAK_BACKOFF_INTERVALS if cls.is_offpeak(now) else cls.BACKOFF_INTERVALS
 
     # Layer 5: 课程关联即时传播
     USER_COURSES_PREFIX = "user_courses:"
@@ -118,10 +131,11 @@ class MonitorService:
 
         # 设置"上次检查"时间戳键，TTL = 当前退避间隔
         backoff_count = int(await redis.get(backoff_key) or 0)
-        idx = min(backoff_count, len(self.BACKOFF_INTERVALS) - 1)
+        intervals = self.backoff_intervals()
+        idx = min(backoff_count, len(intervals) - 1)
         # Up to 10 % shorter (never longer): users that were checked in the same cycle drift
         # apart instead of all becoming due together, which overloaded the queue consumer.
-        interval = int(self.BACKOFF_INTERVALS[idx] * random.uniform(0.9, 1.0))
+        interval = int(intervals[idx] * random.uniform(0.9, 1.0))
         last_check_key = f"monitor:last_check:{username}"
         await redis.set(last_check_key, "1", ex=interval)
 
